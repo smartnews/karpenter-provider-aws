@@ -24,6 +24,7 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
 	"knative.dev/pkg/logging"
@@ -199,9 +200,27 @@ func (c *Controller) handleNodeClaim(ctx context.Context, msg messages.Message, 
 		}
 	}
 	if action != NoAction {
+		// try to create a new nodeclaim immediately but ignore error if it fails
+		if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
+			logging.FromContext(ctx).Errorf("[interruption handling]failed to create a new nodeclaim, %v", err)
+		}
 		return c.deleteNodeClaim(ctx, nodeClaim, node)
 	}
 	return nil
+}
+
+// createNodeClaim creates a new NodeClaim with the same spec of the interrupted one
+func (c *Controller) createNodeClaim(ctx context.Context, oldNodeClaim *v1beta1.NodeClaim) error {
+	newNodeClaim := &v1beta1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName:    oldNodeClaim.ObjectMeta.GenerateName,
+			Annotations:     oldNodeClaim.ObjectMeta.Annotations,
+			Labels:          oldNodeClaim.ObjectMeta.Labels,
+			OwnerReferences: oldNodeClaim.ObjectMeta.OwnerReferences,
+		},
+		Spec: oldNodeClaim.Spec,
+	}
+	return c.kubeClient.Create(ctx, newNodeClaim)
 }
 
 // deleteNodeClaim removes the NodeClaim from the api-server
