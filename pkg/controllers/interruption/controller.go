@@ -198,12 +198,12 @@ func (c *Controller) handleNodeClaim(ctx context.Context, msg messages.Message, 
 		if zone != "" && instanceType != "" {
 			c.unavailableOfferingsCache.MarkUnavailable(ctx, string(msg.Kind()), instanceType, zone, v1beta1.CapacityTypeSpot)
 		}
-	}
-	if action != NoAction {
 		// try to create a new nodeclaim immediately but ignore error if it fails
 		if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
 			logging.FromContext(ctx).Errorf("[interruption handling]failed to create a new nodeclaim, %v", err)
 		}
+	}
+	if action != NoAction {
 		return c.deleteNodeClaim(ctx, nodeClaim, node)
 	}
 	return nil
