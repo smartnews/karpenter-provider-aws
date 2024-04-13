@@ -40,16 +40,20 @@ var _ = Describe("StandaloneNodeClaim", func() {
 	It("should create a standard NodeClaim within the 'c' instance family", func() {
 		nodeClaim := test.NodeClaim(corev1beta1.NodeClaim{
 			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []v1.NodeSelectorRequirement{
+				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 					{
-						Key:      v1beta1.LabelInstanceCategory,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"c"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1beta1.LabelInstanceCategory,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"c"},
+						},
 					},
 					{
-						Key:      corev1beta1.CapacityTypeLabelKey,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      corev1beta1.CapacityTypeLabelKey,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						},
 					},
 				},
 				NodeClassRef: &corev1beta1.NodeClassReference{
@@ -115,15 +119,15 @@ var _ = Describe("StandaloneNodeClaim", func() {
 				Kubelet: &corev1beta1.KubeletConfiguration{
 					MaxPods:     lo.ToPtr[int32](110),
 					PodsPerCore: lo.ToPtr[int32](10),
-					SystemReserved: v1.ResourceList{
-						v1.ResourceCPU:              resource.MustParse("200m"),
-						v1.ResourceMemory:           resource.MustParse("200Mi"),
-						v1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					SystemReserved: map[string]string{
+						string(v1.ResourceCPU):              "200m",
+						string(v1.ResourceMemory):           "200Mi",
+						string(v1.ResourceEphemeralStorage): "1Gi",
 					},
-					KubeReserved: v1.ResourceList{
-						v1.ResourceCPU:              resource.MustParse("200m"),
-						v1.ResourceMemory:           resource.MustParse("200Mi"),
-						v1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					KubeReserved: map[string]string{
+						string(v1.ResourceCPU):              "200m",
+						string(v1.ResourceMemory):           "200Mi",
+						string(v1.ResourceEphemeralStorage): "1Gi",
 					},
 					EvictionHard: map[string]string{
 						"memory.available":   "5%",
@@ -189,16 +193,20 @@ var _ = Describe("StandaloneNodeClaim", func() {
 	It("should remove the cloudProvider NodeClaim when the cluster NodeClaim is deleted", func() {
 		nodeClaim := test.NodeClaim(corev1beta1.NodeClaim{
 			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []v1.NodeSelectorRequirement{
+				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 					{
-						Key:      v1beta1.LabelInstanceCategory,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"c"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1beta1.LabelInstanceCategory,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"c"},
+						},
 					},
 					{
-						Key:      corev1beta1.CapacityTypeLabelKey,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      corev1beta1.CapacityTypeLabelKey,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						},
 					},
 				},
 				NodeClassRef: &corev1beta1.NodeClassReference{
@@ -224,16 +232,20 @@ var _ = Describe("StandaloneNodeClaim", func() {
 	It("should delete a NodeClaim from the node termination finalizer", func() {
 		nodeClaim := test.NodeClaim(corev1beta1.NodeClaim{
 			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []v1.NodeSelectorRequirement{
+				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 					{
-						Key:      v1beta1.LabelInstanceCategory,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"c"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1beta1.LabelInstanceCategory,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"c"},
+						},
 					},
 					{
-						Key:      corev1beta1.CapacityTypeLabelKey,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      corev1beta1.CapacityTypeLabelKey,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						},
 					},
 				},
 				NodeClassRef: &corev1beta1.NodeClassReference{
@@ -270,21 +282,27 @@ var _ = Describe("StandaloneNodeClaim", func() {
 
 		nodeClaim := test.NodeClaim(corev1beta1.NodeClaim{
 			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []v1.NodeSelectorRequirement{
+				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 					{
-						Key:      v1beta1.LabelInstanceCategory,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"c"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1beta1.LabelInstanceCategory,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"c"},
+						},
 					},
 					{
-						Key:      v1.LabelArchStable,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"amd64"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1.LabelArchStable,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"amd64"},
+						},
 					},
 					{
-						Key:      corev1beta1.CapacityTypeLabelKey,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      corev1beta1.CapacityTypeLabelKey,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						},
 					},
 				},
 				NodeClassRef: &corev1beta1.NodeClassReference{
@@ -315,21 +333,27 @@ var _ = Describe("StandaloneNodeClaim", func() {
 
 		nodeClaim := test.NodeClaim(corev1beta1.NodeClaim{
 			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []v1.NodeSelectorRequirement{
+				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 					{
-						Key:      v1beta1.LabelInstanceCategory,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"c"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1beta1.LabelInstanceCategory,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"c"},
+						},
 					},
 					{
-						Key:      v1.LabelArchStable,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"amd64"},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      v1.LabelArchStable,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{"amd64"},
+						},
 					},
 					{
-						Key:      corev1beta1.CapacityTypeLabelKey,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+							Key:      corev1beta1.CapacityTypeLabelKey,
+							Operator: v1.NodeSelectorOpIn,
+							Values:   []string{corev1beta1.CapacityTypeOnDemand},
+						},
 					},
 				},
 				NodeClassRef: &corev1beta1.NodeClassReference{

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/imdario/mergo"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
@@ -54,9 +56,8 @@ import (
 	"github.com/aws/karpenter-provider-aws/pkg/cloudprovider"
 	"github.com/aws/karpenter-provider-aws/pkg/fake"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
-	"github.com/aws/karpenter-provider-aws/pkg/providers/instance"
+	"github.com/aws/karpenter-provider-aws/pkg/providers/amifamily"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/instancetype"
-	"github.com/aws/karpenter-provider-aws/pkg/providers/pricing"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
 )
 
@@ -71,7 +72,7 @@ var cloudProvider *cloudprovider.CloudProvider
 func TestAWS(t *testing.T) {
 	ctx = TestContextWithLogger(t)
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Provider/AWS")
+	RunSpecs(t, "InstanceTypeProvider")
 }
 
 var _ = BeforeSuite(func() {
@@ -83,7 +84,7 @@ var _ = BeforeSuite(func() {
 	cloudProvider = cloudprovider.New(awsEnv.InstanceTypesProvider, awsEnv.InstanceProvider, events.NewRecorder(&record.FakeRecorder{}),
 		env.Client, awsEnv.AMIProvider, awsEnv.SecurityGroupProvider, awsEnv.SubnetProvider)
 	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
-	prov = provisioning.NewProvisioner(env.Client, env.KubernetesInterface.CoreV1(), events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster)
 })
 
 var _ = AfterSuite(func() {
@@ -103,7 +104,7 @@ var _ = AfterEach(func() {
 	ExpectCleanedUp(ctx, env.Client)
 })
 
-var _ = Describe("InstanceTypes", func() {
+var _ = Describe("InstanceTypeProvider", func() {
 	var nodeClass, windowsNodeClass *v1beta1.EC2NodeClass
 	var nodePool, windowsNodePool *corev1beta1.NodePool
 	BeforeEach(func() {
@@ -112,13 +113,16 @@ var _ = Describe("InstanceTypes", func() {
 			Spec: corev1beta1.NodePoolSpec{
 				Template: corev1beta1.NodeClaimTemplate{
 					Spec: corev1beta1.NodeClaimSpec{
-						Requirements: []v1.NodeSelectorRequirement{
+						Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 							{
-								Key:      corev1beta1.CapacityTypeLabelKey,
-								Operator: v1.NodeSelectorOpIn,
-								Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      corev1beta1.CapacityTypeLabelKey,
+									Operator: v1.NodeSelectorOpIn,
+									Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								},
 							},
 						},
+						Kubelet: &corev1beta1.KubeletConfiguration{},
 						NodeClassRef: &corev1beta1.NodeClassReference{
 							Name: nodeClass.Name,
 						},
@@ -135,11 +139,13 @@ var _ = Describe("InstanceTypes", func() {
 			Spec: corev1beta1.NodePoolSpec{
 				Template: corev1beta1.NodeClaimTemplate{
 					Spec: corev1beta1.NodeClaimSpec{
-						Requirements: []v1.NodeSelectorRequirement{
+						Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 							{
-								Key:      corev1beta1.CapacityTypeLabelKey,
-								Operator: v1.NodeSelectorOpIn,
-								Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      corev1beta1.CapacityTypeLabelKey,
+									Operator: v1.NodeSelectorOpIn,
+									Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								},
 							},
 						},
 						NodeClassRef: &corev1beta1.NodeClassReference{
@@ -171,6 +177,7 @@ var _ = Describe("InstanceTypes", func() {
 			v1beta1.LabelInstanceFamily:                       "g4dn",
 			v1beta1.LabelInstanceSize:                         "8xlarge",
 			v1beta1.LabelInstanceCPU:                          "32",
+			v1beta1.LabelInstanceCPUManufacturer:              "intel",
 			v1beta1.LabelInstanceMemory:                       "131072",
 			v1beta1.LabelInstanceNetworkBandwidth:             "50000",
 			v1beta1.LabelInstanceGPUName:                      "t4",
@@ -223,6 +230,7 @@ var _ = Describe("InstanceTypes", func() {
 			v1beta1.LabelInstanceFamily:                       "g4dn",
 			v1beta1.LabelInstanceSize:                         "8xlarge",
 			v1beta1.LabelInstanceCPU:                          "32",
+			v1beta1.LabelInstanceCPUManufacturer:              "intel",
 			v1beta1.LabelInstanceMemory:                       "131072",
 			v1beta1.LabelInstanceNetworkBandwidth:             "50000",
 			v1beta1.LabelInstanceGPUName:                      "t4",
@@ -273,6 +281,7 @@ var _ = Describe("InstanceTypes", func() {
 			v1beta1.LabelInstanceFamily:                       "inf1",
 			v1beta1.LabelInstanceSize:                         "2xlarge",
 			v1beta1.LabelInstanceCPU:                          "8",
+			v1beta1.LabelInstanceCPUManufacturer:              "intel",
 			v1beta1.LabelInstanceMemory:                       "16384",
 			v1beta1.LabelInstanceNetworkBandwidth:             "5000",
 			v1beta1.LabelInstanceAcceleratorName:              "inferentia",
@@ -317,12 +326,12 @@ var _ = Describe("InstanceTypes", func() {
 		ExpectNotScheduled(ctx, env.Client, pod)
 	})
 	It("should order the instance types by price and only consider the cheapest ones", func() {
-		instances := makeFakeInstances()
+		instances := fake.MakeInstances()
 		awsEnv.EC2API.DescribeInstanceTypesOutput.Set(&ec2.DescribeInstanceTypesOutput{
-			InstanceTypes: makeFakeInstances(),
+			InstanceTypes: fake.MakeInstances(),
 		})
 		awsEnv.EC2API.DescribeInstanceTypeOfferingsOutput.Set(&ec2.DescribeInstanceTypeOfferingsOutput{
-			InstanceTypeOfferings: makeFakeInstanceOfferings(instances),
+			InstanceTypeOfferings: fake.MakeInstanceOfferings(instances),
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 		pod := coretest.UnschedulablePod(coretest.PodOptions{
@@ -337,7 +346,7 @@ var _ = Describe("InstanceTypes", func() {
 		Expect(err).To(BeNil())
 		// Order all the instances by their price
 		// We need some way to deterministically order them if their prices match
-		reqs := scheduling.NewNodeSelectorRequirements(nodePool.Spec.Template.Spec.Requirements...)
+		reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nodePool.Spec.Template.Spec.Requirements...)
 		sort.Slice(its, func(i, j int) bool {
 			iPrice := its[i].Offerings.Compatible(reqs).Cheapest().Price
 			jPrice := its[j].Offerings.Compatible(reqs).Cheapest().Price
@@ -346,35 +355,37 @@ var _ = Describe("InstanceTypes", func() {
 			}
 			return iPrice < jPrice
 		})
-		// Expect that the launch template overrides gives the 60 cheapest instance types
-		expected := sets.NewString(lo.Map(its[:instance.MaxInstanceTypes], func(i *corecloudprovider.InstanceType, _ int) string {
+		// Expect that the launch template overrides gives the 100 cheapest instance types
+		expected := sets.NewString(lo.Map(its[:100], func(i *corecloudprovider.InstanceType, _ int) string {
 			return i.Name
 		})...)
 		Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(1))
 		call := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
 		Expect(call.LaunchTemplateConfigs).To(HaveLen(1))
 
-		Expect(call.LaunchTemplateConfigs[0].Overrides).To(HaveLen(instance.MaxInstanceTypes))
+		Expect(call.LaunchTemplateConfigs[0].Overrides).To(HaveLen(60))
 		for _, override := range call.LaunchTemplateConfigs[0].Overrides {
 			Expect(expected.Has(aws.StringValue(override.InstanceType))).To(BeTrue(), fmt.Sprintf("expected %s to exist in set", aws.StringValue(override.InstanceType)))
 		}
 	})
 	It("should order the instance types by price and only consider the spot types that are cheaper than the cheapest on-demand", func() {
-		instances := makeFakeInstances()
+		instances := fake.MakeInstances()
 		awsEnv.EC2API.DescribeInstanceTypesOutput.Set(&ec2.DescribeInstanceTypesOutput{
-			InstanceTypes: makeFakeInstances(),
+			InstanceTypes: fake.MakeInstances(),
 		})
 		awsEnv.EC2API.DescribeInstanceTypeOfferingsOutput.Set(&ec2.DescribeInstanceTypeOfferingsOutput{
-			InstanceTypeOfferings: makeFakeInstanceOfferings(instances),
+			InstanceTypeOfferings: fake.MakeInstanceOfferings(instances),
 		})
 
-		nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
+		nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 			{
-				Key:      corev1beta1.CapacityTypeLabelKey,
-				Operator: v1.NodeSelectorOpIn,
-				Values: []string{
-					corev1beta1.CapacityTypeSpot,
-					corev1beta1.CapacityTypeOnDemand,
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpIn,
+					Values: []string{
+						corev1beta1.CapacityTypeSpot,
+						corev1beta1.CapacityTypeOnDemand,
+					},
 				},
 			},
 		}
@@ -395,7 +406,7 @@ var _ = Describe("InstanceTypes", func() {
 		Expect(err).To(BeNil())
 		// Order all the instances by their price
 		// We need some way to deterministically order them if their prices match
-		reqs := scheduling.NewNodeSelectorRequirements(nodePool.Spec.Template.Spec.Requirements...)
+		reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nodePool.Spec.Template.Spec.Requirements...)
 		sort.Slice(its, func(i, j int) bool {
 			iPrice := its[i].Offerings.Compatible(reqs).Cheapest().Price
 			jPrice := its[j].Offerings.Compatible(reqs).Cheapest().Price
@@ -424,6 +435,43 @@ var _ = Describe("InstanceTypes", func() {
 			Expect(ok).To(BeTrue())
 			Expect(spotPrice).To(BeNumerically("<", cheapestODPrice))
 		}
+	})
+	It("should not remove expensive metal instanceTypeOptions if any of the requirement with minValues is provided", func() {
+		// Construct requirements with minValues for capacityType requirement.
+		nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
+			{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{corev1beta1.CapacityTypeSpot},
+				},
+				MinValues: lo.ToPtr(1),
+			},
+		}
+
+		// Apply requirements and schedule pods.
+		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+		pod := coretest.UnschedulablePod(coretest.PodOptions{
+			ResourceRequirements: v1.ResourceRequirements{
+				Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("1")},
+				Limits:   v1.ResourceList{v1.ResourceCPU: resource.MustParse("1")},
+			},
+		})
+
+		// Check if pods are scheduled and if CreateFleet has the expensive instance-types.
+		ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+		ExpectScheduled(ctx, env.Client, pod)
+		Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(1))
+		call := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
+		var expensiveInstanceType bool
+		for _, ltc := range call.LaunchTemplateConfigs {
+			for _, ovr := range ltc.Overrides {
+				if strings.Contains(aws.StringValue(ovr.InstanceType), "metal") {
+					expensiveInstanceType = true
+				}
+			}
+		}
+		Expect(expensiveInstanceType).To(BeTrue())
 	})
 	It("should de-prioritize metal", func() {
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -465,9 +513,11 @@ var _ = Describe("InstanceTypes", func() {
 	})
 	It("should launch on metal", func() {
 		// add a nodePool requirement for instance type exists to remove our default filter for metal sizes
-		nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, v1.NodeSelectorRequirement{
-			Key:      v1.LabelInstanceTypeStable,
-			Operator: v1.NodeSelectorOpExists,
+		nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, corev1beta1.NodeSelectorRequirementWithMinValues{
+			NodeSelectorRequirement: v1.NodeSelectorRequirement{
+				Key:      v1.LabelInstanceTypeStable,
+				Operator: v1.NodeSelectorOpExists,
+			},
 		})
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 		pod := coretest.UnschedulablePod(coretest.PodOptions{
@@ -598,11 +648,13 @@ var _ = Describe("InstanceTypes", func() {
 	})
 	It("should launch trn1 instances for AWS Neuron resource requests", func() {
 		nodeNames := sets.NewString()
-		nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
+		nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 			{
-				Key:      v1.LabelInstanceTypeStable,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"trn1.2xlarge"},
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceTypeStable,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"trn1.2xlarge"},
+				},
 			},
 		}
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -623,11 +675,13 @@ var _ = Describe("InstanceTypes", func() {
 		Expect(nodeNames.Len()).To(Equal(1))
 	})
 	It("should launch instances for vpc.amazonaws.com/efa resource requests", func() {
-		nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
+		nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 			{
-				Key:      v1.LabelInstanceTypeStable,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"dl1.24xlarge"},
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceTypeStable,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"dl1.24xlarge"},
+				},
 			},
 		}
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -681,7 +735,21 @@ var _ = Describe("InstanceTypes", func() {
 		instanceInfo, err := awsEnv.InstanceTypesProvider.GetInstanceTypes(ctx)
 		Expect(err).To(BeNil())
 		for _, info := range instanceInfo {
-			it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+			amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+			it := instancetype.NewInstanceType(ctx,
+				info,
+				fake.DefaultRegion,
+				nodeClass.Spec.BlockDeviceMappings,
+				nodeClass.Spec.InstanceStorePolicy,
+				nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+				nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+				nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+				nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+				amiFamily,
+				nil,
+			)
 			Expect(it.Capacity.Pods().Value()).ToNot(BeNumerically("==", 110))
 		}
 	})
@@ -690,38 +758,89 @@ var _ = Describe("InstanceTypes", func() {
 		Expect(err).To(BeNil())
 
 		for _, info := range instanceInfo {
-			it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, windowsNodeClass, nil)
+			amiFamily := amifamily.GetAMIFamily(windowsNodeClass.Spec.AMIFamily, &amifamily.Options{})
+			it := instancetype.NewInstanceType(ctx,
+				info,
+				fake.DefaultRegion,
+				windowsNodeClass.Spec.BlockDeviceMappings,
+				windowsNodeClass.Spec.InstanceStorePolicy,
+				nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+				nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+				nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+				nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+				amiFamily,
+				nil,
+			)
 			Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 110))
 		}
 	})
-
-	It("should expose vcpu metrics for instance types", func() {
-		instanceInfo, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
-		Expect(err).To(BeNil())
-		Expect(len(instanceInfo)).To(BeNumerically(">", 0))
-		for _, info := range instanceInfo {
-			metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_cpu_cores", map[string]string{
-				instancetype.InstanceTypeLabel: info.Name,
-			})
-			Expect(ok).To(BeTrue())
-			Expect(metric).To(Not(BeNil()))
-			value := metric.GetGauge().Value
-			Expect(aws.Float64Value(value)).To(BeNumerically(">", 0))
-		}
-	})
-	It("should expose memory metrics for instance types", func() {
-		instanceInfo, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
-		Expect(err).To(BeNil())
-		Expect(len(instanceInfo)).To(BeNumerically(">", 0))
-		for _, info := range instanceInfo {
-			metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_memory_bytes", map[string]string{
-				instancetype.InstanceTypeLabel: info.Name,
-			})
-			Expect(ok).To(BeTrue())
-			Expect(metric).To(Not(BeNil()))
-			value := metric.GetGauge().Value
-			Expect(aws.Float64Value(value)).To(BeNumerically(">", 0))
-		}
+	Context("Metrics", func() {
+		It("should expose vcpu metrics for instance types", func() {
+			instanceTypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+			Expect(err).To(BeNil())
+			Expect(len(instanceTypes)).To(BeNumerically(">", 0))
+			for _, it := range instanceTypes {
+				metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_cpu_cores", map[string]string{
+					"instance_type": it.Name,
+				})
+				Expect(ok).To(BeTrue())
+				Expect(metric).To(Not(BeNil()))
+				value := metric.GetGauge().Value
+				Expect(aws.Float64Value(value)).To(BeNumerically(">", 0))
+			}
+		})
+		It("should expose memory metrics for instance types", func() {
+			instanceTypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+			Expect(err).To(BeNil())
+			Expect(len(instanceTypes)).To(BeNumerically(">", 0))
+			for _, it := range instanceTypes {
+				metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_memory_bytes", map[string]string{
+					"instance_type": it.Name,
+				})
+				Expect(ok).To(BeTrue())
+				Expect(metric).To(Not(BeNil()))
+				value := metric.GetGauge().Value
+				Expect(aws.Float64Value(value)).To(BeNumerically(">", 0))
+			}
+		})
+		It("should expose availability metrics for instance types", func() {
+			instanceTypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+			Expect(err).To(BeNil())
+			Expect(len(instanceTypes)).To(BeNumerically(">", 0))
+			for _, it := range instanceTypes {
+				for _, of := range it.Offerings {
+					metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_offering_available", map[string]string{
+						"instance_type": it.Name,
+						"capacity_type": of.CapacityType,
+						"zone":          of.Zone,
+					})
+					Expect(ok).To(BeTrue())
+					Expect(metric).To(Not(BeNil()))
+					value := metric.GetGauge().Value
+					Expect(aws.Float64Value(value)).To(BeNumerically("==", lo.Ternary(of.Available, 1, 0)))
+				}
+			}
+		})
+		It("should expose pricing metrics for instance types", func() {
+			instanceTypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+			Expect(err).To(BeNil())
+			Expect(len(instanceTypes)).To(BeNumerically(">", 0))
+			for _, it := range instanceTypes {
+				for _, of := range it.Offerings {
+					metric, ok := FindMetricWithLabelValues("karpenter_cloudprovider_instance_type_offering_price_estimate", map[string]string{
+						"instance_type": it.Name,
+						"capacity_type": of.CapacityType,
+						"zone":          of.Zone,
+					})
+					Expect(ok).To(BeTrue())
+					Expect(metric).To(Not(BeNil()))
+					value := metric.GetGauge().Value
+					Expect(aws.Float64Value(value)).To(BeNumerically("==", of.Price))
+				}
+			}
+		})
 	})
 	It("should launch instances in local zones", func() {
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -754,20 +873,48 @@ var _ = Describe("InstanceTypes", func() {
 		})
 		Context("System Reserved Resources", func() {
 			It("should use defaults when no kubelet is specified", func() {
-				it := instancetype.NewInstanceType(ctx, info, &corev1beta1.KubeletConfiguration{}, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.SystemReserved.Cpu().String()).To(Equal("0"))
 				Expect(it.Overhead.SystemReserved.Memory().String()).To(Equal("0"))
 				Expect(it.Overhead.SystemReserved.StorageEphemeral().String()).To(Equal("0"))
 			})
 			It("should override system reserved cpus when specified", func() {
 				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-					SystemReserved: v1.ResourceList{
-						v1.ResourceCPU:              resource.MustParse("2"),
-						v1.ResourceMemory:           resource.MustParse("20Gi"),
-						v1.ResourceEphemeralStorage: resource.MustParse("10Gi"),
+					SystemReserved: map[string]string{
+						string(v1.ResourceCPU):              "2",
+						string(v1.ResourceMemory):           "20Gi",
+						string(v1.ResourceEphemeralStorage): "10Gi",
 					},
 				}
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.SystemReserved.Cpu().String()).To(Equal("2"))
 				Expect(it.Overhead.SystemReserved.Memory().String()).To(Equal("20Gi"))
 				Expect(it.Overhead.SystemReserved.StorageEphemeral().String()).To(Equal("10Gi"))
@@ -775,24 +922,54 @@ var _ = Describe("InstanceTypes", func() {
 		})
 		Context("Kube Reserved Resources", func() {
 			It("should use defaults when no kubelet is specified", func() {
-				it := instancetype.NewInstanceType(ctx, info, &corev1beta1.KubeletConfiguration{}, fake.DefaultRegion, nodeClass, nil)
+				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{}
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.KubeReserved.Cpu().String()).To(Equal("80m"))
 				Expect(it.Overhead.KubeReserved.Memory().String()).To(Equal("893Mi"))
 				Expect(it.Overhead.KubeReserved.StorageEphemeral().String()).To(Equal("1Gi"))
 			})
 			It("should override kube reserved when specified", func() {
-				it := instancetype.NewInstanceType(ctx, info, &corev1beta1.KubeletConfiguration{
-					SystemReserved: v1.ResourceList{
-						v1.ResourceCPU:              resource.MustParse("1"),
-						v1.ResourceMemory:           resource.MustParse("20Gi"),
-						v1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
+					SystemReserved: map[string]string{
+						string(v1.ResourceCPU):              "1",
+						string(v1.ResourceMemory):           "20Gi",
+						string(v1.ResourceEphemeralStorage): "1Gi",
 					},
-					KubeReserved: v1.ResourceList{
-						v1.ResourceCPU:              resource.MustParse("2"),
-						v1.ResourceMemory:           resource.MustParse("10Gi"),
-						v1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
+					KubeReserved: map[string]string{
+						string(v1.ResourceCPU):              "2",
+						string(v1.ResourceMemory):           "10Gi",
+						string(v1.ResourceEphemeralStorage): "2Gi",
 					},
-				}, fake.DefaultRegion, nodeClass, nil)
+				}
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.KubeReserved.Cpu().String()).To(Equal("2"))
 				Expect(it.Overhead.KubeReserved.Memory().String()).To(Equal("10Gi"))
 				Expect(it.Overhead.KubeReserved.StorageEphemeral().String()).To(Equal("2Gi"))
@@ -807,88 +984,158 @@ var _ = Describe("InstanceTypes", func() {
 			Context("Eviction Hard", func() {
 				It("should override eviction threshold when specified as a quantity", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionHard: map[string]string{
 							instancetype.MemoryAvailable: "500Mi",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("500Mi"))
 				})
 				It("should override eviction threshold when specified as a percentage value", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionHard: map[string]string{
 							instancetype.MemoryAvailable: "10%",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().Value()).To(BeNumerically("~", float64(it.Capacity.Memory().Value())*0.1, 10))
 				})
 				It("should consider the eviction threshold disabled when specified as 100%", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionHard: map[string]string{
 							instancetype.MemoryAvailable: "100%",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("0"))
 				})
 				It("should used default eviction threshold for memory when evictionHard not specified", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionSoft: map[string]string{
 							instancetype.MemoryAvailable: "50Mi",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("50Mi"))
 				})
 			})
 			Context("Eviction Soft", func() {
 				It("should override eviction threshold when specified as a quantity", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionSoft: map[string]string{
 							instancetype.MemoryAvailable: "500Mi",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("500Mi"))
 				})
 				It("should override eviction threshold when specified as a percentage value", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionHard: map[string]string{
 							instancetype.MemoryAvailable: "5%",
@@ -897,32 +1144,60 @@ var _ = Describe("InstanceTypes", func() {
 							instancetype.MemoryAvailable: "10%",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().Value()).To(BeNumerically("~", float64(it.Capacity.Memory().Value())*0.1, 10))
 				})
 				It("should consider the eviction threshold disabled when specified as 100%", func() {
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionSoft: map[string]string{
 							instancetype.MemoryAvailable: "100%",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("0"))
 				})
 				It("should ignore eviction threshold when using Bottlerocket AMI", func() {
 					nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyBottlerocket
 					nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-						SystemReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("20Gi"),
+						SystemReserved: map[string]string{
+							string(v1.ResourceMemory): "20Gi",
 						},
-						KubeReserved: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("10Gi"),
+						KubeReserved: map[string]string{
+							string(v1.ResourceMemory): "10Gi",
 						},
 						EvictionHard: map[string]string{
 							instancetype.MemoryAvailable: "1Gi",
@@ -931,23 +1206,52 @@ var _ = Describe("InstanceTypes", func() {
 							instancetype.MemoryAvailable: "10Gi",
 						},
 					}
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("1Gi"))
 				})
 			})
 			It("should take the default eviction threshold when none is specified", func() {
-				it := instancetype.NewInstanceType(ctx, info, &corev1beta1.KubeletConfiguration{}, fake.DefaultRegion, nodeClass, nil)
+				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{}
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.EvictionThreshold.Cpu().String()).To(Equal("0"))
 				Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("100Mi"))
 				Expect(it.Overhead.EvictionThreshold.StorageEphemeral().AsApproximateFloat64()).To(BeNumerically("~", resources.Quantity("2Gi").AsApproximateFloat64()))
 			})
 			It("should take the greater of evictionHard and evictionSoft for overhead as a value", func() {
 				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-					SystemReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("20Gi"),
+					SystemReserved: map[string]string{
+						string(v1.ResourceMemory): "20Gi",
 					},
-					KubeReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("10Gi"),
+					KubeReserved: map[string]string{
+						string(v1.ResourceMemory): "10Gi",
 					},
 					EvictionSoft: map[string]string{
 						instancetype.MemoryAvailable: "3Gi",
@@ -956,16 +1260,30 @@ var _ = Describe("InstanceTypes", func() {
 						instancetype.MemoryAvailable: "1Gi",
 					},
 				}
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.EvictionThreshold.Memory().String()).To(Equal("3Gi"))
 			})
 			It("should take the greater of evictionHard and evictionSoft for overhead as a value", func() {
 				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-					SystemReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("20Gi"),
+					SystemReserved: map[string]string{
+						string(v1.ResourceMemory): "20Gi",
 					},
-					KubeReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("10Gi"),
+					KubeReserved: map[string]string{
+						string(v1.ResourceMemory): "10Gi",
 					},
 					EvictionSoft: map[string]string{
 						instancetype.MemoryAvailable: "2%",
@@ -974,16 +1292,30 @@ var _ = Describe("InstanceTypes", func() {
 						instancetype.MemoryAvailable: "5%",
 					},
 				}
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.EvictionThreshold.Memory().Value()).To(BeNumerically("~", float64(it.Capacity.Memory().Value())*0.05, 10))
 			})
 			It("should take the greater of evictionHard and evictionSoft for overhead with mixed percentage/value", func() {
 				nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-					SystemReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("20Gi"),
+					SystemReserved: map[string]string{
+						string(v1.ResourceMemory): "20Gi",
 					},
-					KubeReserved: v1.ResourceList{
-						v1.ResourceMemory: resource.MustParse("10Gi"),
+					KubeReserved: map[string]string{
+						string(v1.ResourceMemory): "10Gi",
 					},
 					EvictionSoft: map[string]string{
 						instancetype.MemoryAvailable: "10%",
@@ -992,7 +1324,21 @@ var _ = Describe("InstanceTypes", func() {
 						instancetype.MemoryAvailable: "1Gi",
 					},
 				}
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Overhead.EvictionThreshold.Memory().Value()).To(BeNumerically("~", float64(it.Capacity.Memory().Value())*0.1, 10))
 			})
 		})
@@ -1001,11 +1347,39 @@ var _ = Describe("InstanceTypes", func() {
 			Expect(err).To(BeNil())
 			for _, info := range instanceInfo {
 				if *info.InstanceType == "t3.large" {
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 35))
 				}
 				if *info.InstanceType == "m6idn.32xlarge" {
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 345))
 				}
 			}
@@ -1017,7 +1391,21 @@ var _ = Describe("InstanceTypes", func() {
 				MaxPods: ptr.Int32(10),
 			}
 			for _, info := range instanceInfo {
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 10))
 			}
 		})
@@ -1028,7 +1416,21 @@ var _ = Describe("InstanceTypes", func() {
 				MaxPods: ptr.Int32(10),
 			}
 			for _, info := range instanceInfo {
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 10))
 			}
 		})
@@ -1043,7 +1445,21 @@ var _ = Describe("InstanceTypes", func() {
 				return *info.InstanceType == "t3.large"
 			})
 			Expect(ok).To(Equal(true))
-			it := instancetype.NewInstanceType(ctx, t3Large, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+			amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+			it := instancetype.NewInstanceType(ctx,
+				t3Large,
+				fake.DefaultRegion,
+				nodeClass.Spec.BlockDeviceMappings,
+				nodeClass.Spec.InstanceStorePolicy,
+				nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+				nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+				nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+				nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+				amiFamily,
+				nil,
+			)
 			// t3.large
 			// maxInterfaces = 3
 			// maxIPv4PerInterface = 12
@@ -1063,7 +1479,21 @@ var _ = Describe("InstanceTypes", func() {
 				return *info.InstanceType == "t3.large"
 			})
 			Expect(ok).To(Equal(true))
-			it := instancetype.NewInstanceType(ctx, t3Large, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+			amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+			it := instancetype.NewInstanceType(ctx,
+				t3Large,
+				fake.DefaultRegion,
+				nodeClass.Spec.BlockDeviceMappings,
+				nodeClass.Spec.InstanceStorePolicy,
+				nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+				nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+				nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+				nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+				nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+				amiFamily,
+				nil,
+			)
 			// t3.large
 			// maxInterfaces = 3
 			// maxIPv4PerInterface = 12
@@ -1080,7 +1510,21 @@ var _ = Describe("InstanceTypes", func() {
 				PodsPerCore: ptr.Int32(1),
 			}
 			for _, info := range instanceInfo {
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", ptr.Int64Value(info.VCpuInfo.DefaultVCpus)))
 			}
 		})
@@ -1092,7 +1536,21 @@ var _ = Describe("InstanceTypes", func() {
 				MaxPods:     ptr.Int32(20),
 			}
 			for _, info := range instanceInfo {
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", lo.Min([]int64{20, ptr.Int64Value(info.VCpuInfo.DefaultVCpus) * 4})))
 			}
 		})
@@ -1104,7 +1562,21 @@ var _ = Describe("InstanceTypes", func() {
 				PodsPerCore: ptr.Int32(1),
 			}
 			for _, info := range instanceInfo {
-				it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+				amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+				it := instancetype.NewInstanceType(ctx,
+					info,
+					fake.DefaultRegion,
+					nodeClass.Spec.BlockDeviceMappings,
+					nodeClass.Spec.InstanceStorePolicy,
+					nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+					nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+					nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+					nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+					nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+					amiFamily,
+					nil,
+				)
 				limitedPods := instancetype.ENILimitedPods(ctx, info)
 				Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", limitedPods.Value()))
 			}
@@ -1117,11 +1589,39 @@ var _ = Describe("InstanceTypes", func() {
 			}
 			for _, info := range instanceInfo {
 				if *info.InstanceType == "t3.large" {
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 35))
 				}
 				if *info.InstanceType == "m6idn.32xlarge" {
-					it := instancetype.NewInstanceType(ctx, info, nodePool.Spec.Template.Spec.Kubelet, fake.DefaultRegion, nodeClass, nil)
+					amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+					it := instancetype.NewInstanceType(ctx,
+						info,
+						fake.DefaultRegion,
+						nodeClass.Spec.BlockDeviceMappings,
+						nodeClass.Spec.InstanceStorePolicy,
+						nodePool.Spec.Template.Spec.Kubelet.MaxPods,
+						nodePool.Spec.Template.Spec.Kubelet.PodsPerCore,
+						nodePool.Spec.Template.Spec.Kubelet.KubeReserved,
+						nodePool.Spec.Template.Spec.Kubelet.SystemReserved,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionHard,
+						nodePool.Spec.Template.Spec.Kubelet.EvictionSoft,
+						amiFamily,
+						nil,
+					)
 					Expect(it.Capacity.Pods().Value()).To(BeNumerically("==", 345))
 				}
 			}
@@ -1279,10 +1779,12 @@ var _ = Describe("InstanceTypes", func() {
 			awsEnv.EC2API.InsufficientCapacityPools.Set([]fake.CapacityPool{
 				{CapacityType: corev1beta1.CapacityTypeOnDemand, InstanceType: "m5.xlarge", Zone: "test-zone-1a"},
 			})
-			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, v1.NodeSelectorRequirement{
-				Key:      v1.LabelInstanceType,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"m5.large", "m5.xlarge"},
+			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceType,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"m5.large", "m5.xlarge"},
+				},
 			})
 			pods := []*v1.Pod{}
 			for i := 0; i < 2; i++ {
@@ -1360,9 +1862,9 @@ var _ = Describe("InstanceTypes", func() {
 				}
 				return true
 			})).To(Succeed())
-			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
-				{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot, corev1beta1.CapacityTypeOnDemand}},
-				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test-zone-1a"}},
+			nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot, corev1beta1.CapacityTypeOnDemand}}},
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test-zone-1a"}}},
 			}
 			// Spot Unavailable
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -1383,15 +1885,20 @@ var _ = Describe("InstanceTypes", func() {
 				{CapacityType: corev1beta1.CapacityTypeSpot, InstanceType: "m5.xlarge", Zone: "test-zone-1b"},
 			})
 			nodePool.Spec.Template.Spec.Requirements = nil
-			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, v1.NodeSelectorRequirement{
-				Key:      v1.LabelInstanceType,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"m5.xlarge"},
-			})
-			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, v1.NodeSelectorRequirement{
-				Key:      corev1beta1.CapacityTypeLabelKey,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"spot", "on-demand"},
+			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceType,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"m5.xlarge"},
+				},
+			},
+			)
+			nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements, corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"spot", "on-demand"},
+				},
 			})
 
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -1433,8 +1940,8 @@ var _ = Describe("InstanceTypes", func() {
 			Expect(node.Labels).To(HaveKeyWithValue(corev1beta1.CapacityTypeLabelKey, corev1beta1.CapacityTypeOnDemand))
 		})
 		It("should launch spot capacity if flexible to both spot and on demand", func() {
-			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
-				{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot, corev1beta1.CapacityTypeOnDemand}}}
+			nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot, corev1beta1.CapacityTypeOnDemand}}}}
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 			pod := coretest.UnschedulablePod()
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
@@ -1455,10 +1962,10 @@ var _ = Describe("InstanceTypes", func() {
 			})
 			Expect(awsEnv.PricingProvider.UpdateSpotPricing(ctx)).To(Succeed())
 
-			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
-				{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot}},
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large"}},
-				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test-zone-1b"}},
+			nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot}}},
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large"}}},
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test-zone-1b"}}},
 			}
 
 			// Instance type with no zonal availability for spot shouldn't be scheduled
@@ -1482,9 +1989,9 @@ var _ = Describe("InstanceTypes", func() {
 			Expect(awsEnv.PricingProvider.UpdateSpotPricing(ctx)).To(Succeed())
 
 			// not restricting to the zone so we can get any zone
-			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirement{
-				{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot}},
-				{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large"}},
+			nodePool.Spec.Template.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot}}},
+				{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: v1.LabelInstanceTypeStable, Operator: v1.NodeSelectorOpIn, Values: []string{"m5.large"}}},
 			}
 
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -1528,6 +2035,22 @@ var _ = Describe("InstanceTypes", func() {
 			})
 		})
 		It("should default to EBS defaults when volumeSize is not defined in blockDeviceMappings for AL2 Root volume", func() {
+			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+			pod := coretest.UnschedulablePod()
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			node := ExpectScheduled(ctx, env.Client, pod)
+			Expect(*node.Status.Capacity.StorageEphemeral()).To(Equal(resource.MustParse("20Gi")))
+			Expect(awsEnv.EC2API.CalledWithCreateLaunchTemplateInput.Len()).To(BeNumerically(">=", 1))
+			awsEnv.EC2API.CalledWithCreateLaunchTemplateInput.ForEach(func(ltInput *ec2.CreateLaunchTemplateInput) {
+				Expect(ltInput.LaunchTemplateData.BlockDeviceMappings).To(HaveLen(1))
+				Expect(*ltInput.LaunchTemplateData.BlockDeviceMappings[0].DeviceName).To(Equal("/dev/xvda"))
+				Expect(*ltInput.LaunchTemplateData.BlockDeviceMappings[0].Ebs.SnapshotId).To(Equal("snap-xxxxxxxx"))
+			})
+		})
+		It("should default to EBS defaults when volumeSize is not defined in blockDeviceMappings for AL2023 Root volume", func() {
+			nodeClass.Spec.AMIFamily = aws.String(v1beta1.AMIFamilyAL2023)
+			awsEnv.LaunchTemplateProvider.CABundle = lo.ToPtr("Y2EtYnVuZGxlCg==")
+			awsEnv.LaunchTemplateProvider.ClusterCIDR.Store(lo.ToPtr("10.100.0.0/16"))
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 			pod := coretest.UnschedulablePod()
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
@@ -1606,7 +2129,146 @@ var _ = Describe("InstanceTypes", func() {
 			})
 		})
 	})
+	Context("Provider Cache", func() {
+		// Keeping the Cache testing in one IT block to validate the combinatorial expansion of instance types generated by different configs
+		It("changes to kubelet configuration fields should result in a different set of instances types", func() {
+			// We should expect these kubelet configuration fields to change the result of the instance type call
+			// kubelet.kubeReserved
+			// kubelet.systemReserved
+			// kubelet.evictionHard
+			// kubelet.evictionSoft
+			// kubelet.maxPods
+			nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
+				KubeReserved:   map[string]string{string(v1.ResourceCPU): "1"},
+				SystemReserved: map[string]string{string(v1.ResourceCPU): "1"},
+				EvictionHard:   map[string]string{"memory.available": "5%"},
+				EvictionSoft:   map[string]string{"nodefs.available": "10%"},
+				MaxPods:        aws.Int32(10),
+			}
+			kubeletChanges := []*corev1beta1.KubeletConfiguration{
+				{}, // Testing the base case black EC2NodeClass
+				{KubeReserved: map[string]string{string(v1.ResourceCPU): "20"}},
+				{SystemReserved: map[string]string{string(v1.ResourceMemory): "10Gi"}},
+				{EvictionHard: map[string]string{"memory.available": "52%"}},
+				{EvictionSoft: map[string]string{"nodefs.available": "132%"}},
+				{MaxPods: aws.Int32(20)},
+			}
+			var instanceTypeResult [][]*corecloudprovider.InstanceType
+			ExpectApplied(ctx, env.Client, nodeClass)
+			// Adding the general set of to the instancetype into the cache
+			fullInstanceTypeList, err := cloudProvider.GetInstanceTypes(ctx, nodePool)
+			Expect(err).To(BeNil())
+			sort.Slice(fullInstanceTypeList, func(x int, y int) bool {
+				return fullInstanceTypeList[x].Name < fullInstanceTypeList[y].Name
+			})
+
+			sorted := nodePool.DeepCopy()
+			for _, change := range kubeletChanges {
+				nodePool = sorted.DeepCopy()
+				Expect(mergo.Merge(nodePool.Spec.Template.Spec.Kubelet, change, mergo.WithOverride, mergo.WithSliceDeepCopy)).To(BeNil())
+				// Calling the provider and storing the instance type list to the instancetype provider cache
+				_, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+				Expect(err).To(BeNil())
+				// We are making sure to pull from the cache
+				instancetypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+				Expect(err).To(BeNil())
+				sort.Slice(instancetypes, func(x int, y int) bool {
+					return instancetypes[x].Name < instancetypes[y].Name
+				})
+				instanceTypeResult = append(instanceTypeResult, instancetypes)
+			}
+
+			// Based on the nodeclass configuration, we expect to have 5 unique set of instance types
+			uniqueInstanceTypeList(instanceTypeResult)
+		})
+		It("changes to nodeclass fields should result in a different set of instances types", func() {
+			// We should expect these nodeclass fields to change the result of the instance type
+			// nodeClass.instanceStorePolicy
+			// nodeClass.amiFamily
+			// nodeClass.blockDeviceMapping.rootVolume
+			// nodeClass.blockDeviceMapping.volumeSize
+			// nodeClass.blockDeviceMapping.deviceName
+			nodeClass.Spec.BlockDeviceMappings = []*v1beta1.BlockDeviceMapping{
+				{
+					DeviceName: lo.ToPtr("/dev/xvda"),
+					EBS:        &v1beta1.BlockDevice{VolumeSize: resource.NewScaledQuantity(10, resource.Giga)},
+					RootVolume: false,
+				},
+			}
+			nodeClassChanges := []*v1beta1.EC2NodeClass{
+				{}, // Testing the base case black EC2NodeClass
+				{Spec: v1beta1.EC2NodeClassSpec{InstanceStorePolicy: lo.ToPtr(v1beta1.InstanceStorePolicyRAID0)}},
+				{Spec: v1beta1.EC2NodeClassSpec{AMIFamily: &v1beta1.AMIFamilyUbuntu}},
+				{
+					Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{
+						{
+							DeviceName: lo.ToPtr("/dev/sda1"),
+							EBS:        &v1beta1.BlockDevice{VolumeSize: resource.NewScaledQuantity(10, resource.Giga)},
+							RootVolume: true,
+						},
+					},
+					}},
+				{
+					Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{
+						{
+							DeviceName: lo.ToPtr("/dev/xvda"),
+							EBS:        &v1beta1.BlockDevice{VolumeSize: resource.NewScaledQuantity(10, resource.Giga)},
+							RootVolume: true,
+						},
+					},
+					}},
+				{
+					Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{
+						{
+							DeviceName: lo.ToPtr("/dev/xvda"),
+							EBS:        &v1beta1.BlockDevice{VolumeSize: resource.NewScaledQuantity(20, resource.Giga)},
+							RootVolume: false,
+						},
+					},
+					}},
+			}
+			var instanceTypeResult [][]*corecloudprovider.InstanceType
+			ExpectApplied(ctx, env.Client, nodeClass)
+			nodePool.Spec.Template.Spec.NodeClassRef.Name = nodeClass.Name
+			// Adding the general set of to the instancetype into the cache
+			fullInstanceTypeList, err := cloudProvider.GetInstanceTypes(ctx, nodePool)
+			Expect(err).To(BeNil())
+			sort.Slice(fullInstanceTypeList, func(x int, y int) bool {
+				return fullInstanceTypeList[x].Name < fullInstanceTypeList[y].Name
+			})
+
+			sorted := nodeClass.DeepCopy()
+			for _, change := range nodeClassChanges {
+				nodeClass = sorted.DeepCopy()
+				Expect(mergo.Merge(nodeClass, change, mergo.WithOverride)).To(BeNil())
+				// Calling the provider and storing the instance type list to the instancetype provider cache
+				_, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+				Expect(err).To(BeNil())
+				// We are making sure to pull from the cache
+				instanetypes, err := awsEnv.InstanceTypesProvider.List(ctx, nodePool.Spec.Template.Spec.Kubelet, nodeClass)
+				Expect(err).To(BeNil())
+				sort.Slice(instanetypes, func(x int, y int) bool {
+					return instanetypes[x].Name < instanetypes[y].Name
+				})
+				instanceTypeResult = append(instanceTypeResult, instanetypes)
+			}
+
+			// Based on the nodeclass configuration, we expect to have 5 unique set of instance types
+			uniqueInstanceTypeList(instanceTypeResult)
+		})
+	})
 })
+
+func uniqueInstanceTypeList(instanceTypesLists [][]*corecloudprovider.InstanceType) {
+	for x := range instanceTypesLists {
+		for y := range instanceTypesLists {
+			if x == y {
+				continue
+			}
+			Expect(reflect.DeepEqual(instanceTypesLists[x], instanceTypesLists[y])).To(BeFalse())
+		}
+	}
+}
 
 // generateSpotPricing creates a spot price history output for use in a mock that has all spot offerings discounted by 50%
 // vs the on-demand offering.
@@ -1640,49 +2302,4 @@ func generateSpotPricing(cp *cloudprovider.CloudProvider, nodePool *corev1beta1.
 		}
 	}
 	return rsp
-}
-
-func makeFakeInstances() []*ec2.InstanceTypeInfo {
-	var instanceTypes []*ec2.InstanceTypeInfo
-	ctx := options.ToContext(context.Background(), &options.Options{IsolatedVPC: true})
-	// Use keys from the static pricing data so that we guarantee pricing for the data
-	// Create uniform instance data so all of them schedule for a given pod
-	for _, it := range pricing.NewProvider(ctx, nil, nil, "us-east-1").InstanceTypes() {
-		instanceTypes = append(instanceTypes, &ec2.InstanceTypeInfo{
-			InstanceType: aws.String(it),
-			ProcessorInfo: &ec2.ProcessorInfo{
-				SupportedArchitectures: aws.StringSlice([]string{"x86_64"}),
-			},
-			VCpuInfo: &ec2.VCpuInfo{
-				DefaultCores: aws.Int64(1),
-				DefaultVCpus: aws.Int64(2),
-			},
-			MemoryInfo: &ec2.MemoryInfo{
-				SizeInMiB: aws.Int64(8192),
-			},
-			NetworkInfo: &ec2.NetworkInfo{
-				Ipv4AddressesPerInterface: aws.Int64(10),
-				DefaultNetworkCardIndex:   aws.Int64(0),
-				NetworkCards: []*ec2.NetworkCardInfo{{
-					NetworkCardIndex:         lo.ToPtr(int64(0)),
-					MaximumNetworkInterfaces: aws.Int64(3),
-				}},
-			},
-			SupportedUsageClasses: fake.DefaultSupportedUsageClasses,
-		})
-	}
-	return instanceTypes
-}
-
-func makeFakeInstanceOfferings(instanceTypes []*ec2.InstanceTypeInfo) []*ec2.InstanceTypeOffering {
-	var instanceTypeOfferings []*ec2.InstanceTypeOffering
-
-	// Create uniform instance offering data so all of them schedule for a given pod
-	for _, instanceType := range instanceTypes {
-		instanceTypeOfferings = append(instanceTypeOfferings, &ec2.InstanceTypeOffering{
-			InstanceType: instanceType.InstanceType,
-			Location:     aws.String("test-zone-1a"),
-		})
-	}
-	return instanceTypeOfferings
 }

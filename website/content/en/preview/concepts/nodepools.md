@@ -46,6 +46,8 @@ spec:
     spec:
       # References the Cloud Provider's NodeClass resource, see your cloud provider specific documentation
       nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
         name: default
 
       # Provisioned nodes will have these taints
@@ -69,6 +71,13 @@ spec:
         - key: "karpenter.k8s.aws/instance-category"
           operator: In
           values: ["c", "m", "r"]
+          # minValues here enforces the scheduler to consider at least that number of unique instance-category to schedule the pods.
+          # This field is ALPHA and can be dropped or replaced at any time 
+          minValues: 2
+        - key: "karpenter.k8s.aws/instance-family"
+          operator: In
+          values: ["m5","m5d","c5","c5d","c4","r4"]
+          minValues: 5
         - key: "karpenter.k8s.aws/instance-cpu"
           operator: In
           values: ["4", "8", "16", "32"]
@@ -127,12 +136,12 @@ spec:
     # If using 'WhenUnderutilized', Karpenter will consider all nodes for consolidation and attempt to remove or replace Nodes when it discovers that the Node is underutilized and could be changed to reduce cost
     # If using `WhenEmpty`, Karpenter will only consider nodes for consolidation that contain no workload pods
     consolidationPolicy: WhenUnderutilized | WhenEmpty
-    
+
     # The amount of time Karpenter should wait after discovering a consolidation decision
     # This value can currently only be set when the consolidationPolicy is 'WhenEmpty'
     # You can choose to disable consolidation entirely by setting the string value 'Never' here
     consolidateAfter: 30s
-    
+
     # The amount of time a Node can live on the cluster before being removed
     # Avoiding long-running Nodes helps to reduce security vulnerabilities as well as to reduce the chance of issues that can plague Nodes with long uptimes such as file fragmentation or memory leaks from system processes
     # You can choose to disable expiration entirely by setting the string value 'Never' here
@@ -140,8 +149,8 @@ spec:
 
     # Budgets control the speed Karpenter can scale down nodes.
     # Karpenter will respect the minimum of the currently active budgets, and will round up
-    # when considering percentages. Duration and Schedule must be set together. 
-    budgets: 
+    # when considering percentages. Duration and Schedule must be set together.
+    budgets:
     - nodes: 10%
     # On Weekdays during business hours, don't do any deprovisioning.
     - schedule: "0 9 * * mon-fri"
@@ -170,7 +179,9 @@ These well-known labels may be specified at the NodePool level, or in a workload
 
 For example, an instance type may be specified using a nodeSelector in a pod spec. If the instance type requested is not included in the NodePool list and the NodePool has instance type requirements, Karpenter will not create a node or schedule the pod.
 
-### Instance Types
+### Well-Known Labels
+
+#### Instance Types
 
 - key: `node.kubernetes.io/instance-type`
 - key: `karpenter.k8s.aws/instance-family`
@@ -181,7 +192,7 @@ Generally, instance types should be a list and not a single value. Leaving these
 
 Review [AWS instance types](../instance-types). Most instance types are supported with the exclusion of [non-HVM](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/virtualization_types.html).
 
-### Availability Zones
+#### Availability Zones
 
 - key: `topology.kubernetes.io/zone`
 - value example: `us-east-1c`
@@ -192,7 +203,7 @@ Karpenter can be configured to create nodes in a particular zone. Note that the 
 [Learn more about Availability Zone
 IDs.](https://docs.aws.amazon.com/ram/latest/userguide/working-with-az-ids.html)
 
-### Architecture
+#### Architecture
 
 - key: `kubernetes.io/arch`
 - values
@@ -201,7 +212,7 @@ IDs.](https://docs.aws.amazon.com/ram/latest/userguide/working-with-az-ids.html)
 
 Karpenter supports `amd64` nodes, and `arm64` nodes.
 
-### Operating System
+#### Operating System
  - key: `kubernetes.io/os`
  - values
    - `linux`
@@ -209,7 +220,7 @@ Karpenter supports `amd64` nodes, and `arm64` nodes.
 
 Karpenter supports `linux` and `windows` operating systems.
 
-### Capacity Type
+#### Capacity Type
 
 - key: `karpenter.sh/capacity-type`
 - values
@@ -221,6 +232,71 @@ Karpenter supports specifying capacity type, which is analogous to [EC2 purchase
 Karpenter prioritizes Spot offerings if the NodePool allows Spot and on-demand instances. If the provider API (e.g. EC2 Fleet's API) indicates Spot capacity is unavailable, Karpenter caches that result across all attempts to provision EC2 capacity for that instance type and zone for the next 45 seconds. If there are no other possible offerings available for Spot, Karpenter will attempt to provision on-demand instances, generally within milliseconds.
 
 Karpenter also allows `karpenter.sh/capacity-type` to be used as a topology key for enforcing topology-spread.
+
+### Min Values
+
+Along with the combination of [key,operator,values] in the requirements, Karpenter also supports `minValues` in the NodePool requirements block, allowing the scheduler to be aware of user-specified flexibility minimums while scheduling pods to a cluster. If Karpenter cannot meet this minimum flexibility for each key when scheduling a pod, it will fail the scheduling loop for that NodePool, either falling back to another NodePool which meets the pod requirements or failing scheduling the pod altogether.
+
+For example, the below spec will use spot instance type for all provisioned instances and enforces `minValues` to various keys where it is defined
+i.e at least 2 unique instance families from [c,m,r], 5 unique instance families [eg: "m5","m5d","r4","c5","c5d","c4" etc], 10 unique instance types [eg: "c5.2xlarge","c4.xlarge" etc] is required for scheduling the pods.
+
+```yaml
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+          minValues: 2
+        - key: karpenter.k8s.aws/instance-family
+          operator: Exists
+          minValues: 5
+        - key: node.kubernetes.io/instance-type
+          operator: Exists
+          minValues: 10
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+```
+
+Note that `minValues` can be used with multiple operators and multiple requirements. And if the `minValues` are defined with multiple operators for the same requirement key, scheduler considers the max of all the `minValues` for that requirement. For example, the below spec requires scheduler to consider at least 5 instance-family to schedule the pods.
+
+```yaml
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+          minValues: 2
+        - key: karpenter.k8s.aws/instance-family
+          operator: Exists
+          minValues: 5
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["m5","m5d","c5","c5d","c4","r4"]
+          minValues: 3
+        - key: node.kubernetes.io/instance-type
+          operator: Exists
+          minValues: 10
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+```
 
 {{% alert title="Recommended" color="primary" %}}
 Karpenter allows you to be extremely flexible with your NodePools by only constraining your instance types in ways that are absolutely necessary for your cluster. By default, Karpenter will enforce that you specify the `spec.template.spec.requirements` field, but will not enforce that you specify any requirements within the field. If you choose to specify `requirements: []`, this means that you will completely flexible to _all_ instance types that your cloud provider supports.
@@ -295,7 +371,12 @@ kubelet:
 
 Karpenter will automatically configure the system and kube reserved resource requests on the fly on your behalf. These requests are used to configure your node and to make scheduling decisions for your pods. If you have specific requirements or know that you will have additional capacity requirements, you can optionally override the `--system-reserved` configuration defaults with the `.spec.template.spec.kubelet.systemReserved` values and the `--kube-reserved` configuration defaults with the `.spec.template.spec.kubelet.kubeReserved` values.
 
-For more information on the default `--system-reserved` and `--kube-reserved` configuration refer to the [Kubelet Docs](https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/#kube-reserved)
+{{% alert title="Note" color="primary" %}}
+Karpenter considers these reserved resources when computing the allocatable ephemeral storage on a given instance type.
+If `kubeReserved` is not specified, Karpenter will compute the default reserved [CPU](https://github.com/awslabs/amazon-eks-ami/blob/db28da15d2b696bc08ac3aacc9675694f4a69933/files/bootstrap.sh#L251) and [memory](https://github.com/awslabs/amazon-eks-ami/blob/db28da15d2b696bc08ac3aacc9675694f4a69933/files/bootstrap.sh#L235) resources for the purpose of ephemeral storage computation.
+These defaults are based on the defaults on Karpenter's supported AMI families, which are not the same as the kubelet defaults.
+You should be aware of the CPU and memory default calculation when using Custom AMI Families. If they don't align, there may be a difference in Karpenter's computed allocatable ephemeral storage and the actually ephemeral storage available on the node.
+{{% /alert %}}
 
 ### Eviction Thresholds
 
@@ -441,7 +522,7 @@ Review the [Kubernetes core API](https://github.com/kubernetes/api/blob/37748cca
 
 Karpenter allows you to describe NodePool preferences through a `weight` mechanism similar to how weight is described with [pod and node affinities](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity).
 
-For more information on weighting NodePools, see the [Weighting NodePools section]({{<ref "scheduling#weighting-nodepools" >}}) in the scheduling details.
+For more information on weighting NodePools, see the [Weighted NodePools section]({{<ref "scheduling#weighted-nodepools" >}}) in the scheduling docs.
 
 ## Examples
 

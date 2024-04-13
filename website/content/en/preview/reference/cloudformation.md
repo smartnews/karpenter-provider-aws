@@ -17,8 +17,8 @@ These descriptions should allow you to understand:
 To download a particular version of `cloudformation.yaml`, set the version and use `curl` to pull the file to your local system:
 
 ```bash
-export KARPENTER_VERSION={{< param "latest_release_version" >}}
-curl https://raw.githubusercontent.com/aws/karpenter-provider-aws/"${KARPENTER_VERSION}"/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml > cloudformation.yaml
+export KARPENTER_VERSION="{{< param "latest_release_version" >}}"
+curl https://raw.githubusercontent.com/aws/karpenter-provider-aws/v"${KARPENTER_VERSION}"/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml > cloudformation.yaml
 ```
 
 Following some header information, the rest of the `cloudformation.yaml` file describes the resources that CloudFormation deploys.
@@ -363,7 +363,7 @@ This gives EC2 permission explicit permission to use the `KarpenterNodeRole-${Cl
 {
   "Sid": "AllowPassingInstanceRole",
   "Effect": "Allow",
-  "Resource": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/KarpenterNodeRole-${ClusterName}",
+  "Resource": "${KarpenterNodeRole.Arn}",
   "Action": "iam:PassRole",
   "Condition": {
     "StringEquals": {

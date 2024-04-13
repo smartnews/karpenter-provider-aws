@@ -35,6 +35,7 @@ func init() {
 		LabelInstanceSize,
 		LabelInstanceLocalNVME,
 		LabelInstanceCPU,
+		LabelInstanceCPUManufacturer,
 		LabelInstanceMemory,
 		LabelInstanceNetworkBandwidth,
 		LabelInstanceGPUName,
@@ -70,9 +71,12 @@ var (
 		regexp.MustCompile(`^kubernetes\.io/cluster/[0-9A-Za-z][A-Za-z0-9\-_]*$`),
 		regexp.MustCompile(fmt.Sprintf("^%s$", regexp.QuoteMeta(v1beta1.NodePoolLabelKey))),
 		regexp.MustCompile(fmt.Sprintf("^%s$", regexp.QuoteMeta(v1beta1.ManagedByAnnotationKey))),
+		regexp.MustCompile(fmt.Sprintf("^%s$", regexp.QuoteMeta(LabelNodeClass))),
+		regexp.MustCompile(fmt.Sprintf("^%s$", regexp.QuoteMeta(TagNodeClaim))),
 	}
 	AMIFamilyBottlerocket                      = "Bottlerocket"
 	AMIFamilyAL2                               = "AL2"
+	AMIFamilyAL2023                            = "AL2023"
 	AMIFamilyUbuntu                            = "Ubuntu"
 	AMIFamilyWindows2019                       = "Windows2019"
 	AMIFamilyWindows2022                       = "Windows2022"
@@ -100,6 +104,7 @@ var (
 	LabelInstanceLocalNVME                    = Group + "/instance-local-nvme"
 	LabelInstanceSize                         = Group + "/instance-size"
 	LabelInstanceCPU                          = Group + "/instance-cpu"
+	LabelInstanceCPUManufacturer              = Group + "/instance-cpu-manufacturer"
 	LabelInstanceMemory                       = Group + "/instance-memory"
 	LabelInstanceNetworkBandwidth             = Group + "/instance-network-bandwidth"
 	LabelInstanceGPUName                      = Group + "/instance-gpu-name"
@@ -110,5 +115,9 @@ var (
 	LabelInstanceAcceleratorManufacturer      = Group + "/instance-accelerator-manufacturer"
 	LabelInstanceAcceleratorCount             = Group + "/instance-accelerator-count"
 	AnnotationEC2NodeClassHash                = Group + "/ec2nodeclass-hash"
+	AnnotationEC2NodeClassHashVersion         = Group + "/ec2nodeclass-hash-version"
 	AnnotationInstanceTagged                  = Group + "/tagged"
+
+	TagNodeClaim = v1beta1.Group + "/nodeclaim"
+	TagName      = "Name"
 )

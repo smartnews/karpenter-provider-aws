@@ -18,12 +18,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 
 	clock "k8s.io/utils/clock/testing"
@@ -36,11 +38,10 @@ import (
 
 	"github.com/aws/karpenter-provider-aws/pkg/apis"
 	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	"github.com/aws/karpenter-provider-aws/pkg/cloudprovider"
 	"github.com/aws/karpenter-provider-aws/pkg/fake"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
-
-	"github.com/aws/karpenter-provider-aws/pkg/cloudprovider"
 
 	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 	corecloudproivder "sigs.k8s.io/karpenter/pkg/cloudprovider"
@@ -84,7 +85,7 @@ var _ = BeforeSuite(func() {
 	cloudProvider = cloudprovider.New(awsEnv.InstanceTypesProvider, awsEnv.InstanceProvider, recorder,
 		env.Client, awsEnv.AMIProvider, awsEnv.SecurityGroupProvider, awsEnv.SubnetProvider)
 	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
-	prov = provisioning.NewProvisioner(env.Client, env.KubernetesInterface.CoreV1(), recorder, cloudProvider, cluster)
+	prov = provisioning.NewProvisioner(env.Client, recorder, cloudProvider, cluster)
 })
 
 var _ = AfterSuite(func() {
@@ -120,8 +121,8 @@ var _ = Describe("CloudProvider", func() {
 						NodeClassRef: &corev1beta1.NodeClassReference{
 							Name: nodeClass.Name,
 						},
-						Requirements: []v1.NodeSelectorRequirement{
-							{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeOnDemand}},
+						Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
+							{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeOnDemand}}},
 						},
 					},
 				},
@@ -140,11 +141,13 @@ var _ = Describe("CloudProvider", func() {
 	})
 	It("should return an ICE error when there are no instance types to launch", func() {
 		// Specify no instance types and expect to receive a capacity error
-		nodeClaim.Spec.Requirements = []v1.NodeSelectorRequirement{
+		nodeClaim.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 			{
-				Key:      v1.LabelInstanceTypeStable,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"test-instance-type"},
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceTypeStable,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"test-instance-type"},
+				},
 			},
 		}
 		ExpectApplied(ctx, env.Client, nodePool, nodeClass, nodeClaim)
@@ -168,15 +171,16 @@ var _ = Describe("CloudProvider", func() {
 		Expect(ok).To(BeTrue())
 	})
 	Context("EC2 Context", func() {
+		contextID := "context-1234"
 		It("should set context on the CreateFleet request if specified on the NodePool", func() {
-			nodeClass.Spec.Context = aws.String("context-1234")
+			nodeClass.Spec.Context = aws.String(contextID)
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 			pod := coretest.UnschedulablePod()
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
 			ExpectScheduled(ctx, env.Client, pod)
 			Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(1))
 			createFleetInput := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
-			Expect(aws.StringValue(createFleetInput.Context)).To(Equal("context-1234"))
+			Expect(aws.StringValue(createFleetInput.Context)).To(Equal(contextID))
 		})
 		It("should default to no EC2 Context", func() {
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -186,6 +190,302 @@ var _ = Describe("CloudProvider", func() {
 			Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(1))
 			createFleetInput := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
 			Expect(createFleetInput.Context).To(BeNil())
+		})
+	})
+	Context("MinValues", func() {
+		It("CreateFleet input should respect minValues for In operator requirement from NodePool", func() {
+			// Create fake InstanceTypes where one instances can fit 2 pods and another one can fit only 1 pod.
+			// This specific type of inputs will help us differentiate the scenario we are trying to test where ideally
+			// 1 instance launch would have been sufficient to fit the pods and was cheaper but we would launch 2 separate
+			// instances to meet the minimum requirement.
+			instances := fake.MakeInstances()
+			instances, _ = fake.MakeUniqueInstancesAndFamilies(instances, 2)
+			instances[0].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(1)}
+			instances[1].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(8)}
+			awsEnv.EC2API.DescribeInstanceTypesOutput.Set(&ec2.DescribeInstanceTypesOutput{InstanceTypes: instances})
+			awsEnv.EC2API.DescribeInstanceTypeOfferingsOutput.Set(&ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: fake.MakeInstanceOfferings(instances)})
+			now := time.Now()
+			awsEnv.EC2API.DescribeSpotPriceHistoryOutput.Set(&ec2.DescribeSpotPriceHistoryOutput{
+				SpotPriceHistory: []*ec2.SpotPrice{
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     instances[0].InstanceType,
+						SpotPrice:        aws.String("0.002"),
+						Timestamp:        &now,
+					},
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     instances[1].InstanceType,
+						SpotPrice:        aws.String("0.003"),
+						Timestamp:        &now,
+					},
+				},
+			})
+			Expect(awsEnv.PricingProvider.UpdateSpotPricing(ctx)).To(Succeed())
+			instanceNames := lo.Map(instances, func(info *ec2.InstanceTypeInfo, _ int) string { return *info.InstanceType })
+
+			// Define NodePool that has minValues on instance-type requirement.
+			nodePool = coretest.NodePool(corev1beta1.NodePool{
+				Spec: corev1beta1.NodePoolSpec{
+					Template: corev1beta1.NodeClaimTemplate{
+						Spec: corev1beta1.NodeClaimSpec{
+							NodeClassRef: &corev1beta1.NodeClassReference{
+								Name: nodeClass.Name,
+							},
+							Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      corev1beta1.CapacityTypeLabelKey,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{corev1beta1.CapacityTypeSpot},
+									},
+								},
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1.LabelInstanceTypeStable,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   instanceNames,
+									},
+									MinValues: lo.ToPtr(2),
+								},
+							},
+						},
+					},
+				},
+			})
+
+			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+
+			// 2 pods are created with resources such that both fit together only in one of the 2 InstanceTypes created above.
+			pod1 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			pod2 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod1, pod2)
+
+			// Under normal circumstances 1 node would have been created that fits both the pods but
+			// here minValue enforces to include both the instances. And since one of the instances can
+			// only fit 1 pod, only 1 pod is scheduled to run in the node to be launched by CreateFleet.
+			node1 := ExpectScheduled(ctx, env.Client, pod1)
+			node2 := ExpectScheduled(ctx, env.Client, pod2)
+
+			// This ensures that the pods are scheduled in 2 different nodes.
+			Expect(node1.Name).ToNot(Equal(node2.Name))
+			Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(2))
+			createFleetInput := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
+			uniqueInstanceTypes := sets.Set[string]{}
+			for _, launchTemplateConfig := range createFleetInput.LaunchTemplateConfigs {
+				for _, override := range launchTemplateConfig.Overrides {
+					uniqueInstanceTypes.Insert(*override.InstanceType)
+				}
+			}
+			// This ensures that we have sent the minimum number of requirements defined in the NodePool.
+			Expect(len(uniqueInstanceTypes)).To(BeNumerically(">=", 2))
+		})
+		It("CreateFleet input should respect minValues for Exists Operator in requirement from NodePool", func() {
+			// Create fake InstanceTypes where one instances can fit 2 pods and another one can fit only 1 pod.
+			instances := fake.MakeInstances()
+			instances, _ = fake.MakeUniqueInstancesAndFamilies(instances, 2)
+			instances[0].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(1)}
+			instances[1].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(8)}
+			awsEnv.EC2API.DescribeInstanceTypesOutput.Set(&ec2.DescribeInstanceTypesOutput{InstanceTypes: instances})
+			awsEnv.EC2API.DescribeInstanceTypeOfferingsOutput.Set(&ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: fake.MakeInstanceOfferings(instances)})
+			now := time.Now()
+			awsEnv.EC2API.DescribeSpotPriceHistoryOutput.Set(&ec2.DescribeSpotPriceHistoryOutput{
+				SpotPriceHistory: []*ec2.SpotPrice{
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     instances[0].InstanceType,
+						SpotPrice:        aws.String("0.002"),
+						Timestamp:        &now,
+					},
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     instances[1].InstanceType,
+						SpotPrice:        aws.String("0.003"),
+						Timestamp:        &now,
+					},
+				},
+			})
+			Expect(awsEnv.PricingProvider.UpdateSpotPricing(ctx)).To(Succeed())
+			instanceNames := lo.Map(instances, func(info *ec2.InstanceTypeInfo, _ int) string { return *info.InstanceType })
+
+			// Define NodePool that has minValues on instance-type requirement.
+			nodePool = coretest.NodePool(corev1beta1.NodePool{
+				Spec: corev1beta1.NodePoolSpec{
+					Template: corev1beta1.NodeClaimTemplate{
+						Spec: corev1beta1.NodeClaimSpec{
+							NodeClassRef: &corev1beta1.NodeClassReference{
+								Name: nodeClass.Name,
+							},
+							Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1.LabelInstanceTypeStable,
+										Operator: v1.NodeSelectorOpExists,
+									},
+									MinValues: lo.ToPtr(2),
+								},
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1.LabelInstanceTypeStable,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   instanceNames,
+									},
+									MinValues: lo.ToPtr(1),
+								},
+							},
+						},
+					},
+				},
+			})
+
+			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+
+			// 2 pods are created with resources such that both fit together only in one of the 2 InstanceTypes created above.
+			pod1 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			pod2 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod1, pod2)
+
+			// Under normal circumstances 1 node would have been created that fits both the pods but
+			// here minValue enforces to include both the instances. And since one of the instances can
+			// only fit 1 pod, only 1 pod is scheduled to run in the node to be launched by CreateFleet.
+			node1 := ExpectScheduled(ctx, env.Client, pod1)
+			node2 := ExpectScheduled(ctx, env.Client, pod2)
+
+			// This ensures that the pods are scheduled in 2 different nodes.
+			Expect(node1.Name).ToNot(Equal(node2.Name))
+			Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(2))
+			createFleetInput := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
+			uniqueInstanceTypes := sets.Set[string]{}
+			for _, launchTemplateConfig := range createFleetInput.LaunchTemplateConfigs {
+				for _, override := range launchTemplateConfig.Overrides {
+					uniqueInstanceTypes.Insert(*override.InstanceType)
+				}
+			}
+			// This ensures that we have sent the minimum number of requirements defined in the NodePool.
+			Expect(len(uniqueInstanceTypes)).To(BeNumerically(">=", 2))
+		})
+		It("CreateFleet input should respect minValues from multiple keys in NodePool", func() {
+			// Create fake InstanceTypes where 2 instances can fit 2 pods individually and one can fit only 1 pod.
+			instances := fake.MakeInstances()
+			uniqInstanceTypes, instanceFamilies := fake.MakeUniqueInstancesAndFamilies(instances, 3)
+			uniqInstanceTypes[0].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(1)}
+			uniqInstanceTypes[1].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(4)}
+			uniqInstanceTypes[2].VCpuInfo = &ec2.VCpuInfo{DefaultVCpus: aws.Int64(8)}
+			awsEnv.EC2API.DescribeInstanceTypesOutput.Set(&ec2.DescribeInstanceTypesOutput{InstanceTypes: uniqInstanceTypes})
+			awsEnv.EC2API.DescribeInstanceTypeOfferingsOutput.Set(&ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: fake.MakeInstanceOfferings(uniqInstanceTypes)})
+			now := time.Now()
+			awsEnv.EC2API.DescribeSpotPriceHistoryOutput.Set(&ec2.DescribeSpotPriceHistoryOutput{
+				SpotPriceHistory: []*ec2.SpotPrice{
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     uniqInstanceTypes[0].InstanceType,
+						SpotPrice:        aws.String("0.002"),
+						Timestamp:        &now,
+					},
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     uniqInstanceTypes[1].InstanceType,
+						SpotPrice:        aws.String("0.003"),
+						Timestamp:        &now,
+					},
+					{
+						AvailabilityZone: aws.String("test-zone-1a"),
+						InstanceType:     uniqInstanceTypes[2].InstanceType,
+						SpotPrice:        aws.String("0.004"),
+						Timestamp:        &now,
+					},
+				},
+			})
+			Expect(awsEnv.PricingProvider.UpdateSpotPricing(ctx)).To(Succeed())
+			instanceNames := lo.Map(uniqInstanceTypes, func(info *ec2.InstanceTypeInfo, _ int) string { return *info.InstanceType })
+
+			// Define NodePool that has minValues in multiple requirements.
+			nodePool = coretest.NodePool(corev1beta1.NodePool{
+				Spec: corev1beta1.NodePoolSpec{
+					Template: corev1beta1.NodeClaimTemplate{
+						Spec: corev1beta1.NodeClaimSpec{
+							NodeClassRef: &corev1beta1.NodeClassReference{
+								Name: nodeClass.Name,
+							},
+							Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1.LabelInstanceTypeStable,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   instanceNames,
+									},
+									// consider at least 2 unique instance types
+									MinValues: lo.ToPtr(2),
+								},
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1beta1.LabelInstanceFamily,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   instanceFamilies.UnsortedList(),
+									},
+									// consider at least 3 unique instance families
+									MinValues: lo.ToPtr(3),
+								},
+							},
+						},
+					},
+				},
+			})
+
+			ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+			pod1 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			pod2 := coretest.UnschedulablePod(
+				coretest.PodOptions{
+					ResourceRequirements: v1.ResourceRequirements{Requests: v1.ResourceList{
+						v1.ResourceCPU: resource.MustParse("0.9")},
+					},
+				})
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod1, pod2)
+
+			// Under normal circumstances 1 node would have been created that fits both the pods but
+			// here minValue enforces to include all the 3 instances to satisfy both the instance-type and instance-family requirements.
+			// And since one of the instances can only fit 1 pod, only 1 pod is scheduled to run in the node to be launched by CreateFleet.
+			node1 := ExpectScheduled(ctx, env.Client, pod1)
+			node2 := ExpectScheduled(ctx, env.Client, pod2)
+			Expect(node1.Name).ToNot(Equal(node2.Name))
+			Expect(awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Len()).To(Equal(2))
+			createFleetInput := awsEnv.EC2API.CreateFleetBehavior.CalledWithInput.Pop()
+			uniqueInstanceTypes, uniqueInstanceFamilies := sets.Set[string]{}, sets.Set[string]{}
+			for _, launchTemplateConfig := range createFleetInput.LaunchTemplateConfigs {
+				for _, override := range launchTemplateConfig.Overrides {
+					uniqueInstanceTypes.Insert(*override.InstanceType)
+					uniqueInstanceFamilies.Insert(strings.Split(*override.InstanceType, ".")[0])
+				}
+			}
+			// Ensure that there are at least minimum number of unique instance types as per the requirement in the CreateFleet request.
+			Expect(len(uniqueInstanceTypes)).To(BeNumerically("==", 3))
+			// Ensure that there are at least minimum number of unique instance families as per the requirement in the CreateFleet request.
+			Expect(len(uniqueInstanceFamilies)).To(BeNumerically("==", 3))
 		})
 	})
 	Context("NodeClaim Drift", func() {
@@ -293,10 +593,14 @@ var _ = Describe("CloudProvider", func() {
 				Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{instance}}},
 			})
 			nodeClass.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{
-				v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash(),
+				v1beta1.AnnotationEC2NodeClassHash:        nodeClass.Hash(),
+				v1beta1.AnnotationEC2NodeClassHashVersion: v1beta1.EC2NodeClassHashVersion,
 			})
 			nodeClaim.Status.ProviderID = fake.ProviderID(lo.FromPtr(instance.InstanceId))
-			nodeClaim.Annotations = lo.Assign(nodeClaim.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
+			nodeClaim.Annotations = lo.Assign(nodeClaim.Annotations, map[string]string{
+				v1beta1.AnnotationEC2NodeClassHash:        nodeClass.Hash(),
+				v1beta1.AnnotationEC2NodeClassHashVersion: v1beta1.EC2NodeClassHashVersion,
+			})
 			nodeClaim.Labels = lo.Assign(nodeClaim.Labels, map[string]string{v1.LabelInstanceTypeStable: selectedInstanceType.Name})
 		})
 		It("should not fail if NodeClass does not exist", func() {
@@ -418,14 +722,56 @@ var _ = Describe("CloudProvider", func() {
 			Expect(isDrifted).To(Equal(cloudprovider.AMIDrift))
 		})
 		Context("Static Drift Detection", func() {
-			DescribeTable("should return drifted if the spec is updated",
+			BeforeEach(func() {
+				nodeClass = &v1beta1.EC2NodeClass{
+					ObjectMeta: nodeClass.ObjectMeta,
+					Spec: v1beta1.EC2NodeClassSpec{
+						SubnetSelectorTerms:        nodeClass.Spec.SubnetSelectorTerms,
+						SecurityGroupSelectorTerms: nodeClass.Spec.SecurityGroupSelectorTerms,
+						Role:                       nodeClass.Spec.Role,
+						UserData:                   lo.ToPtr("Fake Userdata"),
+						Tags: map[string]string{
+							"fakeKey": "fakeValue",
+						},
+						Context:                  lo.ToPtr("fake-context"),
+						DetailedMonitoring:       lo.ToPtr(false),
+						AMIFamily:                lo.ToPtr(v1beta1.AMIFamilyAL2023),
+						AssociatePublicIPAddress: lo.ToPtr(false),
+						MetadataOptions: &v1beta1.MetadataOptions{
+							HTTPEndpoint:            lo.ToPtr("disabled"),
+							HTTPProtocolIPv6:        lo.ToPtr("disabled"),
+							HTTPPutResponseHopLimit: lo.ToPtr(int64(1)),
+							HTTPTokens:              lo.ToPtr("optional"),
+						},
+						BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{
+							{
+								DeviceName: lo.ToPtr("fakeName"),
+								RootVolume: false,
+								EBS: &v1beta1.BlockDevice{
+									DeleteOnTermination: lo.ToPtr(false),
+									Encrypted:           lo.ToPtr(false),
+									IOPS:                lo.ToPtr(int64(0)),
+									KMSKeyID:            lo.ToPtr("fakeKMSKeyID"),
+									SnapshotID:          lo.ToPtr("fakeSnapshot"),
+									Throughput:          lo.ToPtr(int64(0)),
+									VolumeSize:          resource.NewScaledQuantity(2, resource.Giga),
+									VolumeType:          lo.ToPtr("standard"),
+								},
+							},
+						},
+					},
+				}
+				nodeClass.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
+				nodeClaim.Annotations = lo.Assign(nodeClaim.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
+			})
+			DescribeTable("should return drifted if a statically drifted EC2NodeClass.Spec field is updated",
 				func(changes v1beta1.EC2NodeClass) {
 					ExpectApplied(ctx, env.Client, nodePool, nodeClass)
 					isDrifted, err := cloudProvider.IsDrifted(ctx, nodeClaim)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(isDrifted).To(BeEmpty())
 
-					Expect(mergo.Merge(nodeClass, changes, mergo.WithOverride))
+					Expect(mergo.Merge(nodeClass, changes, mergo.WithOverride, mergo.WithSliceDeepCopy)).To(Succeed())
 					nodeClass.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
 
 					ExpectApplied(ctx, env.Client, nodeClass)
@@ -433,14 +779,38 @@ var _ = Describe("CloudProvider", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(isDrifted).To(Equal(cloudprovider.NodeClassDrift))
 				},
-				Entry("UserData Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{UserData: aws.String("userdata-test-2")}}),
-				Entry("Tags Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{Tags: map[string]string{"keyTag-test-3": "valueTag-test-3"}}}),
-				Entry("MetadataOptions Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPEndpoint: aws.String("disabled")}}}),
-				Entry("BlockDeviceMappings Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{DeviceName: aws.String("map-device-test-3")}}}}),
-				Entry("Context Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{Context: aws.String("context-2")}}),
-				Entry("DetailedMonitoring Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{DetailedMonitoring: aws.Bool(true)}}),
-				Entry("AMIFamily Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{AMIFamily: aws.String(v1beta1.AMIFamilyBottlerocket)}}),
+				Entry("UserData", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{UserData: lo.ToPtr("userdata-test-2")}}),
+				Entry("Tags", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{Tags: map[string]string{"keyTag-test-3": "valueTag-test-3"}}}),
+				Entry("Context", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{Context: lo.ToPtr("context-2")}}),
+				Entry("DetailedMonitoring", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{DetailedMonitoring: aws.Bool(true)}}),
+				Entry("AMIFamily", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{AMIFamily: lo.ToPtr(v1beta1.AMIFamilyBottlerocket)}}),
+				Entry("InstanceStorePolicy", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{InstanceStorePolicy: lo.ToPtr(v1beta1.InstanceStorePolicyRAID0)}}),
+				Entry("AssociatePublicIPAddress", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{AssociatePublicIPAddress: lo.ToPtr(true)}}),
+				Entry("MetadataOptions HTTPEndpoint", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPEndpoint: lo.ToPtr("enabled")}}}),
+				Entry("MetadataOptions HTTPProtocolIPv6", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPProtocolIPv6: lo.ToPtr("enabled")}}}),
+				Entry("MetadataOptions HTTPPutResponseHopLimit", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPPutResponseHopLimit: lo.ToPtr(int64(10))}}}),
+				Entry("MetadataOptions HTTPTokens", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPTokens: lo.ToPtr("required")}}}),
+				Entry("BlockDeviceMapping DeviceName", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{DeviceName: lo.ToPtr("map-device-test-3")}}}}),
+				Entry("BlockDeviceMapping RootVolume", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{RootVolume: true}}}}),
+				Entry("BlockDeviceMapping DeleteOnTermination", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{DeleteOnTermination: lo.ToPtr(true)}}}}}),
+				Entry("BlockDeviceMapping Encrypted", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{Encrypted: lo.ToPtr(true)}}}}}),
+				Entry("BlockDeviceMapping IOPS", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{IOPS: lo.ToPtr(int64(10))}}}}}),
+				Entry("BlockDeviceMapping KMSKeyID", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{KMSKeyID: lo.ToPtr("test")}}}}}),
+				Entry("BlockDeviceMapping SnapshotID", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{SnapshotID: lo.ToPtr("test")}}}}}),
+				Entry("BlockDeviceMapping Throughput", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{Throughput: lo.ToPtr(int64(10))}}}}}),
+				Entry("BlockDeviceMapping VolumeType", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{{EBS: &v1beta1.BlockDevice{VolumeType: lo.ToPtr("io1")}}}}}),
 			)
+			// We create a separate test for updating blockDeviceMapping volumeSize, since resource.Quantity is a struct, and mergo.WithSliceDeepCopy
+			// doesn't work well with unexported fields, like the ones that are present in resource.Quantity
+			It("should return drifted when updating blockDeviceMapping volumeSize", func() {
+				nodeClass.Spec.BlockDeviceMappings[0].EBS.VolumeSize = resource.NewScaledQuantity(10, resource.Giga)
+				nodeClass.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
+
+				ExpectApplied(ctx, env.Client, nodeClass)
+				isDrifted, err := cloudProvider.IsDrifted(ctx, nodeClaim)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(isDrifted).To(Equal(cloudprovider.NodeClassDrift))
+			})
 			DescribeTable("should not return drifted if dynamic fields are updated",
 				func(changes v1beta1.EC2NodeClass) {
 					ExpectApplied(ctx, env.Client, nodePool, nodeClass)
@@ -460,8 +830,58 @@ var _ = Describe("CloudProvider", func() {
 				Entry("Subnet Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{SubnetSelectorTerms: []v1beta1.SubnetSelectorTerm{{Tags: map[string]string{"sn-key-1": "sn-value-1"}}}}}),
 				Entry("SecurityGroup Drift", v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{SecurityGroupSelectorTerms: []v1beta1.SecurityGroupSelectorTerm{{Tags: map[string]string{"sg-key": "sg-value"}}}}}),
 			)
-			It("should not return drifted if karpenter.k8s.aws/nodeclass-hash annotation is not present on the NodeClaim", func() {
-				nodeClaim.Annotations = map[string]string{}
+			It("should not return drifted if karpenter.k8s.aws/ec2nodeclass-hash annotation is not present on the NodeClaim", func() {
+				nodeClaim.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHashVersion: v1beta1.EC2NodeClassHashVersion,
+				}
+				nodeClass.Spec.Tags = map[string]string{
+					"Test Key": "Test Value",
+				}
+				ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+				isDrifted, err := cloudProvider.IsDrifted(ctx, nodeClaim)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(isDrifted).To(BeEmpty())
+			})
+			It("should not return drifted if the NodeClaim's karpenter.k8s.aws/ec2nodeclass-hash-version annotation does not match the EC2NodeClass's", func() {
+				nodeClass.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash:        "test-hash-111111",
+					v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-1",
+				}
+				nodeClaim.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash:        "test-hash-222222",
+					v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-2",
+				}
+				ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+				isDrifted, err := cloudProvider.IsDrifted(ctx, nodeClaim)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(isDrifted).To(BeEmpty())
+			})
+			It("should not return drifted if karpenter.k8s.aws/ec2nodeclass-hash-version annotation is not present on the NodeClass", func() {
+				nodeClass.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash: "test-hash-111111",
+				}
+				nodeClaim.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash:        "test-hash-222222",
+					v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-2",
+				}
+				// should trigger drift
+				nodeClass.Spec.Tags = map[string]string{
+					"Test Key": "Test Value",
+				}
+				ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+				isDrifted, err := cloudProvider.IsDrifted(ctx, nodeClaim)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(isDrifted).To(BeEmpty())
+			})
+			It("should not return drifted if karpenter.k8s.aws/ec2nodeclass-hash-version annotation is not present on the NodeClaim", func() {
+				nodeClass.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash:        "test-hash-111111",
+					v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-1",
+				}
+				nodeClaim.ObjectMeta.Annotations = map[string]string{
+					v1beta1.AnnotationEC2NodeClassHash: "test-hash-222222",
+				}
+				// should trigger drift
 				nodeClass.Spec.Tags = map[string]string{
 					"Test Key": "Test Value",
 				}
@@ -637,11 +1057,13 @@ var _ = Describe("CloudProvider", func() {
 	})
 	Context("EFA", func() {
 		It("should include vpc.amazonaws.com/efa on a nodeclaim if it requests it", func() {
-			nodeClaim.Spec.Requirements = []v1.NodeSelectorRequirement{
+			nodeClaim.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 				{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"dl1.24xlarge"},
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1.LabelInstanceTypeStable,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"dl1.24xlarge"},
+					},
 				},
 			}
 			nodeClaim.Spec.Resources.Requests = v1.ResourceList{v1beta1.ResourceEFA: resource.MustParse("1")}
@@ -651,11 +1073,13 @@ var _ = Describe("CloudProvider", func() {
 			Expect(lo.Keys(cloudProviderNodeClaim.Status.Allocatable)).To(ContainElement(v1beta1.ResourceEFA))
 		})
 		It("shouldn't include vpc.amazonaws.com/efa on a nodeclaim if it doesn't request it", func() {
-			nodeClaim.Spec.Requirements = []v1.NodeSelectorRequirement{
+			nodeClaim.Spec.Requirements = []corev1beta1.NodeSelectorRequirementWithMinValues{
 				{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"dl1.24xlarge"},
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1.LabelInstanceTypeStable,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"dl1.24xlarge"},
+					},
 				},
 			}
 			ExpectApplied(ctx, env.Client, nodePool, nodeClass, nodeClaim)

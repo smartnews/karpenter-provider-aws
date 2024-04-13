@@ -16,13 +16,15 @@ package resourcetypes
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
+	"golang.org/x/exp/slices"
+	v1 "k8s.io/api/core/v1"
 )
 
 type InstanceProfile struct {
@@ -41,7 +43,7 @@ func (ip *InstanceProfile) Global() bool {
 	return true
 }
 
-func (ip *InstanceProfile) GetExpired(ctx context.Context, expirationTime time.Time) (names []string, err error) {
+func (ip *InstanceProfile) GetExpired(ctx context.Context, expirationTime time.Time, excludedClusters []string) (names []string, err error) {
 	out, err := ip.iamClient.ListInstanceProfiles(ctx, &iam.ListInstanceProfilesInput{})
 	if err != nil {
 		return names, err
@@ -49,15 +51,23 @@ func (ip *InstanceProfile) GetExpired(ctx context.Context, expirationTime time.T
 
 	errs := make([]error, len(out.InstanceProfiles))
 	for i := range out.InstanceProfiles {
-		// Checking to make sure we are only list resources in the given region
-		if !strings.Contains(lo.FromPtr(out.InstanceProfiles[i].Arn), lo.Must(config.LoadDefaultConfig(ctx)).Region) {
-			continue
-		}
 		profiles, err := ip.iamClient.ListInstanceProfileTags(ctx, &iam.ListInstanceProfileTagsInput{
 			InstanceProfileName: out.InstanceProfiles[i].InstanceProfileName,
 		})
 		if err != nil {
 			errs[i] = err
+			continue
+		}
+
+		clusterName, _ := lo.Find(profiles.Tags, func(tag iamtypes.Tag) bool {
+			return lo.FromPtr(tag.Key) == karpenterTestingTag
+		})
+		// Checking to make sure we are only list resources in the given region
+		region, _ := lo.Find(profiles.Tags, func(tag iamtypes.Tag) bool {
+			return lo.FromPtr(tag.Key) == v1.LabelTopologyZone
+		})
+
+		if slices.Contains(excludedClusters, lo.FromPtr(clusterName.Value)) || lo.FromPtr(region.Value) != lo.Must(config.LoadDefaultConfig(ctx)).Region {
 			continue
 		}
 
@@ -128,6 +138,7 @@ func (ip *InstanceProfile) Cleanup(ctx context.Context, names []string) ([]strin
 		if err != nil {
 			errs = multierr.Append(errs, err)
 		}
+		deleted = append(deleted, names[i])
 	}
 	return deleted, errs
 }

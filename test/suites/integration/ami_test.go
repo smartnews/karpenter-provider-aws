@@ -31,6 +31,8 @@ import (
 
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
+	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+
 	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
 	awsenv "github.com/aws/karpenter-provider-aws/test/pkg/environment/aws"
 
@@ -41,7 +43,7 @@ import (
 var _ = Describe("AMI", func() {
 	var customAMI string
 	BeforeEach(func() {
-		customAMI = env.GetCustomAMI("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", 1)
+		customAMI = env.GetCustomAMI("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", 1)
 	})
 
 	It("should use the AMI defined by the AMI Selector Terms", func() {
@@ -59,12 +61,7 @@ var _ = Describe("AMI", func() {
 	})
 	It("should use the most recent AMI when discovering multiple", func() {
 		// choose an old static image
-		parameter, err := env.SSMAPI.GetParameter(&ssm.GetParameterInput{
-			Name: aws.String("/aws/service/eks/optimized-ami/1.23/amazon-linux-2/amazon-eks-node-1.23-v20230322/image_id"),
-		})
-		Expect(err).To(BeNil())
-		oldCustomAMI := *parameter.Parameter.Value
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
+		oldCustomAMI := env.GetCustomAMI("/aws/service/eks/optimized-ami/%[1]s/amazon-linux-2023/x86_64/standard/amazon-eks-node-al2023-x86_64-standard-%[1]s-v20240307/image_id", 1)
 		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
 			{
 				ID: customAMI,
@@ -73,7 +70,6 @@ var _ = Describe("AMI", func() {
 				ID: oldCustomAMI,
 			},
 		}
-		nodeClass.Spec.UserData = aws.String(fmt.Sprintf("#!/bin/bash\n/etc/eks/bootstrap.sh '%s'", env.ClusterName))
 		pod := coretest.Pod()
 
 		env.ExpectCreated(pod, nodeClass, nodePool)
@@ -88,14 +84,12 @@ var _ = Describe("AMI", func() {
 		})
 		Expect(err).To(BeNil())
 		Expect(output.Images).To(HaveLen(1))
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
 		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
 			{
 				Name:  *output.Images[0].Name,
 				Owner: "fakeOwnerValue",
 			},
 		}
-		nodeClass.Spec.UserData = aws.String(fmt.Sprintf("#!/bin/bash\n/etc/eks/bootstrap.sh '%s'", env.ClusterName))
 		pod := coretest.Pod()
 
 		env.ExpectCreated(pod, nodeClass, nodePool)
@@ -109,13 +103,11 @@ var _ = Describe("AMI", func() {
 		Expect(err).To(BeNil())
 		Expect(output.Images).To(HaveLen(1))
 
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
 		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
 			{
 				Name: *output.Images[0].Name,
 			},
 		}
-		nodeClass.Spec.UserData = aws.String(fmt.Sprintf("#!/bin/bash\n/etc/eks/bootstrap.sh '%s'", env.ClusterName))
 		pod := coretest.Pod()
 
 		env.ExpectCreated(pod, nodeClass, nodePool)
@@ -125,13 +117,11 @@ var _ = Describe("AMI", func() {
 		env.ExpectInstance(pod.Spec.NodeName).To(HaveField("ImageId", HaveValue(Equal(customAMI))))
 	})
 	It("should support ami selector ids", func() {
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
 		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
 			{
 				ID: customAMI,
 			},
 		}
-		nodeClass.Spec.UserData = aws.String(fmt.Sprintf("#!/bin/bash\n/etc/eks/bootstrap.sh '%s'", env.ClusterName))
 		pod := coretest.Pod()
 
 		env.ExpectCreated(pod, nodeClass, nodePool)
@@ -143,6 +133,14 @@ var _ = Describe("AMI", func() {
 
 	Context("AMIFamily", func() {
 		It("should provision a node using the AL2 family", func() {
+			pod := coretest.Pod()
+			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2
+			env.ExpectCreated(nodeClass, nodePool, pod)
+			env.EventuallyExpectHealthy(pod)
+			env.ExpectCreatedNodeCount("==", 1)
+		})
+		It("should provision a node using the AL2023 family", func() {
+			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2023
 			pod := coretest.Pod()
 			env.ExpectCreated(nodeClass, nodePool, pod)
 			env.EventuallyExpectHealthy(pod)
@@ -171,10 +169,12 @@ var _ = Describe("AMI", func() {
 			// TODO: remove requirements after Ubuntu fixes bootstrap script issue w/
 			// new instance types not included in the max-pods.txt file. (https://github.com/aws/karpenter-provider-aws/issues/4472)
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceFamily,
-					Operator: v1.NodeSelectorOpNotIn,
-					Values:   awsenv.ExcludedInstanceFamilies,
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceFamily,
+						Operator: v1.NodeSelectorOpNotIn,
+						Values:   awsenv.ExcludedInstanceFamilies,
+					},
 				},
 			)
 			pod := coretest.Pod()
@@ -184,9 +184,10 @@ var _ = Describe("AMI", func() {
 		})
 		It("should support Custom AMIFamily with AMI Selectors", func() {
 			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
+			al2AMI := env.GetCustomAMI("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", 1)
 			nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
 				{
-					ID: customAMI,
+					ID: al2AMI,
 				},
 			}
 			nodeClass.Spec.UserData = aws.String(fmt.Sprintf("#!/bin/bash\n/etc/eks/bootstrap.sh '%s'", env.ClusterName))
@@ -196,7 +197,7 @@ var _ = Describe("AMI", func() {
 			env.EventuallyExpectHealthy(pod)
 			env.ExpectCreatedNodeCount("==", 1)
 
-			env.ExpectInstance(pod.Spec.NodeName).To(HaveField("ImageId", HaveValue(Equal(customAMI))))
+			env.ExpectInstance(pod.Spec.NodeName).To(HaveField("ImageId", HaveValue(Equal(al2AMI))))
 		})
 		It("should have the EC2NodeClass status for AMIs using wildcard", func() {
 			nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
@@ -225,6 +226,7 @@ var _ = Describe("AMI", func() {
 		It("should merge UserData contents for AL2 AMIFamily", func() {
 			content, err := os.ReadFile("testdata/al2_userdata_input.sh")
 			Expect(err).ToNot(HaveOccurred())
+			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2
 			nodeClass.Spec.UserData = aws.String(string(content))
 			nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "example.com", Value: "value", Effect: "NoExecute"}}
 			nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "example.com", Value: "value", Effect: "NoSchedule"}}
@@ -245,6 +247,7 @@ var _ = Describe("AMI", func() {
 		It("should merge non-MIME UserData contents for AL2 AMIFamily", func() {
 			content, err := os.ReadFile("testdata/al2_no_mime_userdata_input.sh")
 			Expect(err).ToNot(HaveOccurred())
+			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2
 			nodeClass.Spec.UserData = aws.String(string(content))
 			nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "example.com", Value: "value", Effect: "NoExecute"}}
 			nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "example.com", Value: "value", Effect: "NoSchedule"}}
@@ -296,15 +299,19 @@ var _ = Describe("AMI", func() {
 
 			// TODO: remove this requirement once VPC RC rolls out m7a.*, r7a.* ENI data (https://github.com/aws/karpenter-provider-aws/issues/4472)
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceFamily,
-					Operator: v1.NodeSelectorOpNotIn,
-					Values:   awsenv.ExcludedInstanceFamilies,
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceFamily,
+						Operator: v1.NodeSelectorOpNotIn,
+						Values:   awsenv.ExcludedInstanceFamilies,
+					},
 				},
-				v1.NodeSelectorRequirement{
-					Key:      v1.LabelOSStable,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{string(v1.Windows)},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1.LabelOSStable,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{string(v1.Windows)},
+					},
 				},
 			)
 			pod := coretest.Pod(coretest.PodOptions{

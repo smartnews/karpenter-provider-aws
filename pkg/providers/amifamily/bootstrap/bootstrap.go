@@ -25,7 +25,6 @@ import (
 	"knative.dev/pkg/ptr"
 
 	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	"sigs.k8s.io/karpenter/pkg/utils/resources"
 
 	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
 )
@@ -34,6 +33,7 @@ import (
 type Options struct {
 	ClusterName             string
 	ClusterEndpoint         string
+	ClusterCIDR             *string
 	KubeletConfig           *corev1beta1.KubeletConfiguration
 	Taints                  []core.Taint      `hash:"set"`
 	Labels                  map[string]string `hash:"set"`
@@ -57,8 +57,8 @@ func (o Options) kubeletExtraArgs() (args []string) {
 		args = append(args, fmt.Sprintf("--pods-per-core=%d", ptr.Int32Value(o.KubeletConfig.PodsPerCore)))
 	}
 	// We have to convert some of these maps so that their values return the correct string
-	args = append(args, joinParameterArgs("--system-reserved", resources.StringMap(o.KubeletConfig.SystemReserved), "="))
-	args = append(args, joinParameterArgs("--kube-reserved", resources.StringMap(o.KubeletConfig.KubeReserved), "="))
+	args = append(args, joinParameterArgs("--system-reserved", o.KubeletConfig.SystemReserved, "="))
+	args = append(args, joinParameterArgs("--kube-reserved", o.KubeletConfig.KubeReserved, "="))
 	args = append(args, joinParameterArgs("--eviction-hard", o.KubeletConfig.EvictionHard, "<"))
 	args = append(args, joinParameterArgs("--eviction-soft", o.KubeletConfig.EvictionSoft, "<"))
 	args = append(args, joinParameterArgs("--eviction-soft-grace-period", lo.MapValues(o.KubeletConfig.EvictionSoftGracePeriod, func(v metav1.Duration, _ string) string { return v.Duration.String() }), "="))

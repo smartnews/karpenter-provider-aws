@@ -1,4 +1,4 @@
----
+ ---
 title: "NodeClasses"
 linkTitle: "NodeClasses"
 weight: 2
@@ -35,7 +35,7 @@ spec:
   # Each term in the array of subnetSelectorTerms is ORed together
   # Within a single term, all conditions are ANDed
   subnetSelectorTerms:
-    # Select on any subnet that has the "karpenter.sh/discovery: ${CLUSTER_NAME}" 
+    # Select on any subnet that has the "karpenter.sh/discovery: ${CLUSTER_NAME}"
     # AND the "environment: test" tag OR any subnet with ID "subnet-09fa4a0a8f233a921"
     - tags:
         karpenter.sh/discovery: "${CLUSTER_NAME}"
@@ -46,8 +46,8 @@ spec:
   # Each term in the array of securityGroupSelectorTerms is ORed together
   # Within a single term, all conditions are ANDed
   securityGroupSelectorTerms:
-    # Select on any security group that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag 
-    # AND the "environment: test" tag OR any security group with the "my-security-group" name 
+    # Select on any security group that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag
+    # AND the "environment: test" tag OR any security group with the "my-security-group" name
     # OR any security group with ID "sg-063d7acfb4b06c82c"
     - tags:
         karpenter.sh/discovery: "${CLUSTER_NAME}"
@@ -70,15 +70,15 @@ spec:
   # Each term in the array of amiSelectorTerms is ORed together
   # Within a single term, all conditions are ANDed
   amiSelectorTerms:
-    # Select on any AMI that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag 
-    # AND the "environment: test" tag OR any AMI with the "my-ami" name 
+    # Select on any AMI that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag
+    # AND the "environment: test" tag OR any AMI with the "my-ami" name
     # OR any AMI with ID "ami-123"
     - tags:
         karpenter.sh/discovery: "${CLUSTER_NAME}"
         environment: test
     - name: my-ami
     - id: ami-123
-      
+
   # Optional, use instance-store volumes for node ephemeral-storage
   instanceStorePolicy: RAID0
 
@@ -113,6 +113,10 @@ spec:
 
   # Optional, configures detailed monitoring for the instance
   detailedMonitoring: true
+
+  # Optional, configures if the instance should be launched with an associated public IP address.
+  # If not specified, the default value depends on the subnet's public IP auto-assign setting.
+  associatePublicIPAddress: true
 status:
   # Resolved subnets
   subnets:
@@ -160,7 +164,7 @@ Refer to the [NodePool docs]({{<ref "./nodepools" >}}) for settings applicable t
 
 ## spec.amiFamily
 
-AMIFamily is a required field, dictating both the default bootstrapping logic for nodes provisioned through this `EC2NodeClass` but also selecting a group of recommended, latest AMIs by default. Currently, Karpenter supports `amiFamily` values `AL2`, `Bottlerocket`, `Ubuntu`, `Windows2019`, `Windows2022` and `Custom`. GPUs are only supported by default with `AL2` and `Bottlerocket`. The `AL2` amiFamily does not support ARM64 GPU instance types unless you specify custom [`amiSelectorTerms`]({{<ref "#specamiselectorterms" >}}). Default bootstrapping logic is shown below for each of the supported families.
+AMIFamily is a required field, dictating both the default bootstrapping logic for nodes provisioned through this `EC2NodeClass` but also selecting a group of recommended, latest AMIs by default. Currently, Karpenter supports `amiFamily` values `AL2`, `AL2023`, `Bottlerocket`, `Ubuntu`, `Windows2019`, `Windows2022` and `Custom`. GPUs are only supported by default with `AL2` and `Bottlerocket`. The `AL2` amiFamily does not support ARM64 GPU instance types unless you specify custom [`amiSelectorTerms`]({{<ref "#specamiselectorterms" >}}). Default bootstrapping logic is shown below for each of the supported families.
 
 ### AL2
 
@@ -178,6 +182,34 @@ exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 --use-max-pods false \
 --kubelet-extra-args '--node-labels=karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=test  --max-pods=110'
 --//--
+```
+
+### AL2023
+
+```text
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: application/node.eks.aws
+
+# Karpenter Generated NodeConfig
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: test-cluster
+    apiServerEndpoint: https://example.com
+    certificateAuthority: ca-bundle
+    cidr: 10.100.0.0/16
+  kubelet:
+    config:
+      maxPods: 110
+    flags:
+      - --node-labels=karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=test
+
+--//--
+
 ```
 
 ### Bottlerocket
@@ -248,7 +280,7 @@ This selection logic is modeled as terms, where each term contains multiple cond
 
 ```yaml
 subnetSelectorTerms:
-  # Select on any subnet that has the "karpenter.sh/discovery: ${CLUSTER_NAME}" 
+  # Select on any subnet that has the "karpenter.sh/discovery: ${CLUSTER_NAME}"
   # AND the "environment: test" tag OR any subnet with ID "subnet-09fa4a0a8f233a921"
   - tags:
       karpenter.sh/discovery: "${CLUSTER_NAME}"
@@ -306,6 +338,7 @@ spec:
     - id: "subnet-0471ca205b8a129ae"
 ```
 
+
 ## spec.securityGroupSelectorTerms
 
 Security Group Selector Terms allow you to specify selection logic for all security groups that will be attached to an instance launched from the `EC2NodeClass`. The security group of an instance is comparable to a set of firewall rules.
@@ -315,8 +348,8 @@ This selection logic is modeled as terms, where each term contains multiple cond
 
 ```yaml
 securityGroupSelectorTerms:
-  # Select on any security group that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag 
-  # AND the "environment: test" tag OR any security group with the "my-security-group" name 
+  # Select on any security group that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag
+  # AND the "environment: test" tag OR any security group with the "my-security-group" name
   # OR any security group with ID "sg-063d7acfb4b06c82c"
   - tags:
       karpenter.sh/discovery: "${CLUSTER_NAME}"
@@ -402,8 +435,8 @@ This selection logic is modeled as terms, where each term contains multiple cond
 
 ```yaml
 amiSelectorTerms:
-  # Select on any AMI that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag 
-  # AND the "environment: test" tag OR any AMI with the "my-ami" name 
+  # Select on any AMI that has both the "karpenter.sh/discovery: ${CLUSTER_NAME}" tag
+  # AND the "environment: test" tag OR any AMI with the "my-ami" name
   # OR any AMI with ID "ami-123"
   - tags:
       karpenter.sh/discovery: "${CLUSTER_NAME}"
@@ -424,6 +457,7 @@ AMIs may be specified by any AWS tag, including `Name`. Selecting by tag or by n
 If `amiSelectorTerms` match more than one AMI, Karpenter will automatically determine which AMI best fits the workloads on the launched worker node under the following constraints:
 
 * When launching nodes, Karpenter automatically determines which architecture a custom AMI is compatible with and will use images that match an instanceType's requirements.
+    * Note that Karpenter **cannot** detect any requirement other than architecture. If you need to specify different AMIs for different kind of nodes (e.g. accelerated GPU AMIs), you should use a separate `EC2NodeClass`.
 * If multiple AMIs are found that can be used, Karpenter will choose the latest one.
 * If no AMIs are found that can be used, then no nodes will be provisioned.
 {{% /alert %}}
@@ -483,7 +517,7 @@ Specify using ids:
 
 ## spec.role
 
-`Role` is an optional field and is necessary to tell Karpenter which identity nodes from this `EC2NodeClass` should assume. You must specify one of `role` or `instanceProfile` when creating a Karpenter `EC2NodeClass`. If using the [Karpenter Getting Started Guide]({{<ref "../getting-started/getting-started-with-karpenter" >}}) to deploy Karpenter, you can use the `KarpenterNodeRole-$CLUSTER_NAME` role provisioned by that process.
+`Role` is an optional field and tells Karpenter which IAM identity nodes should assume. You must specify one of `role` or `instanceProfile` when creating a Karpenter `EC2NodeClass`. If using the [Karpenter Getting Started Guide]({{<ref "../getting-started/getting-started-with-karpenter" >}}) to deploy Karpenter, you can use the `KarpenterNodeRole-$CLUSTER_NAME` role provisioned by that process.
 
 ```yaml
 spec:
@@ -492,7 +526,9 @@ spec:
 
 ## spec.instanceProfile
 
-`InstanceProfile` is an optional field and is necessary to tell Karpenter which identity nodes from this `EC2NodeClass` should assume. You must specify one of `role` or `instanceProfile` when creating a Karpenter `EC2NodeClasss`. If you use the `instanceProfile` field instead of `role`, Karpenter will not manage the InstanceProfile on your behalf.
+`InstanceProfile` is an optional field and tells Karpenter which IAM identity nodes should assume. You must specify one of `role` or `instanceProfile` when creating a Karpenter `EC2NodeClass`. If you use the `instanceProfile` field instead of `role`, Karpenter will not manage the InstanceProfile on your behalf; instead, it expects that you have pre-provisioned an IAM instance profile and assigned it a role.
+
+You can provision and assign a role to an IAM instance profile using [CloudFormation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-instanceprofile.html) or by using the [`aws iam create-instance-profile`](https://docs.aws.amazon.com/cli/latest/reference/iam/create-instance-profile.html) and [`aws iam add-role-to-instance-profile`](https://docs.aws.amazon.com/cli/latest/reference/iam/add-role-to-instance-profile.html) commands in the CLI.
 
 {{% alert title="Note" color="primary" %}}
 
@@ -574,6 +610,17 @@ spec:
         encrypted: true
 ```
 
+### AL2023
+```yaml
+spec:
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+```
+
 ### Bottlerocket
 ```yaml
 spec:
@@ -626,25 +673,29 @@ The `instanceStorePolicy` field controls how [instance-store](https://docs.aws.a
 
 If you intend to use these volumes for faster node ephemeral-storage, set `instanceStorePolicy` to `RAID0`:
 
-```yaml	
-spec:	
+```yaml
+spec:
   instanceStorePolicy: RAID0
 ```
 
-This will set the allocatable ephemeral-storage of each node to the total size of the instance-store volume(s).	
+This will set the allocatable ephemeral-storage of each node to the total size of the instance-store volume(s).
 
-The disks must be formatted & mounted in a RAID0 and be the underlying filesystem for the Kubelet & Containerd. Instructions for each AMI family are listed below:	
+The disks must be formatted & mounted in a RAID0 and be the underlying filesystem for the Kubelet & Containerd. Instructions for each AMI family are listed below:
 
-#### AL2	
+#### AL2
 
-On AL2, Karpenter automatically configures the disks through an additional boostrap argument (`--local-disks raid0`). The device name is `/dev/md/0` and its mount point is `/mnt/k8s-disks/0`. You should ensure any additional disk setup does not interfere with these.	
+On AL2, Karpenter automatically configures the disks through an additional boostrap argument (`--local-disks raid0`). The device name is `/dev/md/0` and its mount point is `/mnt/k8s-disks/0`. You should ensure any additional disk setup does not interfere with these.
 
-#### Others	
+#### AL2023
 
-For all other AMI families, you must configure the disks yourself. Check out the [`setup-local-disks`](https://github.com/awslabs/amazon-eks-ami/blob/master/files/bin/setup-local-disks) script in [amazon-eks-ami](https://github.com/awslabs/amazon-eks-ami) to see how this is done for AL2.	
+On AL2023, Karpenter automatically configures the disks via the generated `NodeConfig` object. Like AL2, the device name is `/dev/md/0` and its mount point is `/mnt/k8s-disks/0`. You should ensure any additional disk setup does not interfere with these.
 
-{{% alert title="Tip" color="secondary" %}}	
-Since the Kubelet & Containerd will be using the instance-store filesystem, you may consider using a more minimal root volume size.	
+#### Others
+
+For all other AMI families, you must configure the disks yourself. Check out the [`setup-local-disks`](https://github.com/awslabs/amazon-eks-ami/blob/master/files/bin/setup-local-disks) script in [amazon-eks-ami](https://github.com/awslabs/amazon-eks-ami) to see how this is done for AL2.
+
+{{% alert title="Tip" color="secondary" %}}
+Since the Kubelet & Containerd will be using the instance-store filesystem, you may consider using a more minimal root volume size.
 {{% /alert %}}
 
 ## spec.userData
@@ -710,7 +761,30 @@ Consider the following example to understand how your custom UserData will be me
 
 ```bash
 #!/bin/bash
-echo "Running custom user data script"
+echo "Running custom user data script (bash)"
+```
+
+#### Merged UserData (bash)
+
+```bash
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+echo "Running custom user data script (bash)"
+
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash -xe
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+/etc/eks/bootstrap.sh 'test-cluster' --apiserver-endpoint 'https://test-cluster' --b64-cluster-ca 'ca-bundle' \
+--use-max-pods false \
+--kubelet-extra-args '--node-labels=karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=test  --max-pods=110'
+--//--
 ```
 
 #### Passed-in UserData (MIME)
@@ -723,12 +797,12 @@ Content-Type: multipart/mixed; boundary="BOUNDARY"
 Content-Type: text/x-shellscript; charset="us-ascii"
 
 #!/bin/bash
-echo "Running custom user data script"
+echo "Running custom user data script (mime)"
 
 --BOUNDARY--
 ```
 
-#### Merged UserData
+#### Merged UserData (MIME)
 
 ```bash
 MIME-Version: 1.0
@@ -738,7 +812,7 @@ Content-Type: multipart/mixed; boundary="//"
 Content-Type: text/x-shellscript; charset="us-ascii"
 
 #!/bin/bash
-echo "Running custom user data script"
+echo "Running custom user data script (mime)"
 
 --//
 Content-Type: text/x-shellscript; charset="us-ascii"
@@ -767,6 +841,169 @@ spec:
     echo "$(jq '.kubeAPIQPS=50' /etc/kubernetes/kubelet/kubelet-config.json)" > /etc/kubernetes/kubelet/kubelet-config.json
 ```
 {{% /alert %}}
+
+### AL2023
+
+* Your UserData may be in one of three formats: a [MIME multi part archive](https://cloudinit.readthedocs.io/en/latest/topics/format.html#mime-multi-part-archive), a NodeConfig YAML / JSON string, or a shell script.
+* Karpenter will transform your custom UserData into a MIME part, if necessary, and then create a MIME multi-part archive. This archive will consist of a generated NodeConfig, containing Karpenter's default values, followed by the transformed custom UserData. For more information on the NodeConfig spec, refer to the [AL2023 EKS Optimized AMI docs](https://awslabs.github.io/amazon-eks-ami/nodeadm/doc/examples/).
+* If a value is specified both in the Karpenter generated NodeConfig and the same value is specified in the custom user data, the value in the custom user data will take precedence.
+
+#### Passed-in UserData (NodeConfig)
+
+```yaml
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  kubelet:
+    config:
+      maxPods: 42
+```
+
+#### Merged UserData (NodeConfig)
+
+```text
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+# Karpenter Generated NodeConfig
+Content-Type: application/node.eks.aws
+
+# Karpenter Generated NodeConfig
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    apiServerEndpoint: https://test-cluster
+    certificateAuthority: cluster-ca
+    cidr: 10.100.0.0/16
+    name: test-cluster
+  kubelet:
+    config:
+      clusterDNS:
+      - 10.100.0.10
+      maxPods: 118
+    flags:
+    - --node-labels="karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=default"
+
+--//
+Content-Type: application/node.eks.aws
+
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  kubelet:
+    config:
+      maxPods: 42
+--//--
+```
+
+#### Passed-in UserData (bash)
+
+```shell
+#!/bin/bash
+echo "Hello, AL2023!"
+```
+
+#### Merged UserData (bash)
+
+```text
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: application/node.eks.aws
+
+# Karpenter Generated NodeConfig
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    apiServerEndpoint: https://test-cluster
+    certificateAuthority: cluster-ca
+    cidr: 10.100.0.0/16
+    name: test-cluster
+  kubelet:
+    config:
+      clusterDNS:
+      - 10.100.0.10
+      maxPods: 118
+    flags:
+    - --node-labels="karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=default"
+
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+echo "Hello, AL2023!"
+--//--
+```
+
+#### Passed-in UserData (MIME)
+
+```text
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: application/node.eks.aws
+
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  kubelet:
+    config:
+      maxPods: 42
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+echo "Hello, AL2023!"
+--//
+```
+
+#### Merged UserData (MIME)
+
+```text
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: application/node.eks.aws
+
+# Karpenter Generated NodeConfig
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    apiServerEndpoint: https://test-cluster
+    certificateAuthority: cluster-ca
+    cidr: 10.100.0.0/16
+    name: test-cluster
+  kubelet:
+    config:
+      clusterDNS:
+      - 10.100.0.10
+      maxPods: 118
+    flags:
+    - --node-labels="karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=default"
+
+--//
+Content-Type: application/node.eks.aws
+
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  kubelet:
+    config:
+      maxPods: 42
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+echo "Hello, AL2023!"
+--//--
+```
 
 ### Bottlerocket
 
@@ -859,6 +1096,15 @@ Enabling detailed monitoring controls the [EC2 detailed monitoring](https://docs
 spec:
   detailedMonitoring: true
 ```
+
+## spec.associatePublicIPAddress
+
+A boolean field that controls whether instances created by Karpenter for this EC2NodeClass will have an associated public IP address. This overrides the `MapPublicIpOnLaunch` setting applied to the subnet the node is launched in. If this field is not set, the `MapPublicIpOnLaunch` field will be respected.
+
+{{% alert title="Note" color="warning" %}}
+If a `NodeClaim` requests `vpc.amazonaws.com/efa` resources, `spec.associatePublicIPAddress` is respected. However, if this `NodeClaim` requests **multiple** EFA resources and the value for `spec.associatePublicIPAddress` is true, the instance will fail to launch. This is due to an EC2 restriction which
+requires that the field is only set to true when configuring an instance with a single ENI at launch. When using this field, it is advised that users segregate their EFA workload to use a separate `NodePool` / `EC2NodeClass` pair.
+{{% /alert %}}
 
 ## status.subnets
 [`status.subnets`]({{< ref "#statussubnets" >}}) contains the resolved `id` and `zone` of the subnets that were selected by the [`spec.subnetSelectorTerms`]({{< ref "#specsubnetselectorterms" >}}) for the node class. The subnets will be sorted by the available IP address count in decreasing order.

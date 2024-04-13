@@ -45,8 +45,8 @@ After setting up the tools, set the Karpenter and Kubernetes version:
 
 ```bash
 export KARPENTER_NAMESPACE=karpenter
-export KARPENTER_VERSION=v0.32.6
-export K8S_VERSION={{< param "latest_k8s_version" >}}
+export KARPENTER_VERSION=v0.32.9
+export K8S_VERSION=1.28
 ```
 
 Then set the following environment variable:
@@ -58,7 +58,7 @@ If you open a new shell to run steps in this procedure, you need to set some or 
 To remind yourself of these values, type:
 
 ```bash
-echo $KARPENTER_NAMESPACE $KARPENTER_VERSION $K8S_VERSION $CLUSTER_NAME $AWS_DEFAULT_REGION $AWS_ACCOUNT_ID $TEMPOUT
+echo "${KARPENTER_NAMESPACE}" "${KARPENTER_VERSION}" "${K8S_VERSION}" "${CLUSTER_NAME}" "${AWS_DEFAULT_REGION}" "${AWS_ACCOUNT_ID}" "${TEMPOUT}" "${ARM_AMI_ID}" "${AMD_AMI_ID}" "${GPU_AMI_ID}"
 ```
 
 {{% /alert %}}
@@ -180,6 +180,7 @@ com.amazonaws.<region>.s3 – For pulling container images
 com.amazonaws.<region>.sts – For IAM roles for service accounts
 com.amazonaws.<region>.ssm - For resolving default AMIs
 com.amazonaws.<region>.sqs - For accessing SQS if using interruption handling
+com.amazonaws.<region>.eks - For Karpenter to discover the cluster endpoint
 ```
 
 If you do not currently have these endpoints surfaced in your VPC, you can add the endpoints by running

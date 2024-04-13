@@ -32,7 +32,7 @@ Install these tools before proceeding:
 
 1. [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2-linux.html)
 2. `kubectl` - [the Kubernetes CLI](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/)
-3. `eksctl` (>= v0.165.0) - [the CLI for AWS EKS](https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html)
+3. `eksctl` (>= v0.169.0) - [the CLI for AWS EKS](https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html)
 4. `helm` - [the package manager for Kubernetes](https://helm.sh/docs/intro/install/)
 
 [Configure the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-quickstart.html)
@@ -44,9 +44,9 @@ authenticate properly by running `aws sts get-caller-identity`.
 After setting up the tools, set the Karpenter and Kubernetes version:
 
 ```bash
-export KARPENTER_NAMESPACE=kube-system
-export KARPENTER_VERSION=v0.33.2
-export K8S_VERSION={{< param "latest_k8s_version" >}}
+export KARPENTER_NAMESPACE="kube-system"
+export KARPENTER_VERSION="{{< param "latest_release_version" >}}"
+export K8S_VERSION="{{< param "latest_k8s_version" >}}"
 ```
 
 Then set the following environment variable:
@@ -58,7 +58,7 @@ If you open a new shell to run steps in this procedure, you need to set some or 
 To remind yourself of these values, type:
 
 ```bash
-echo $KARPENTER_NAMESPACE $KARPENTER_VERSION $K8S_VERSION $CLUSTER_NAME $AWS_DEFAULT_REGION $AWS_ACCOUNT_ID $TEMPOUT
+echo "${KARPENTER_NAMESPACE}" "${KARPENTER_VERSION}" "${K8S_VERSION}" "${CLUSTER_NAME}" "${AWS_DEFAULT_REGION}" "${AWS_ACCOUNT_ID}" "${TEMPOUT}" "${ARM_AMI_ID}" "${AMD_AMI_ID}" "${GPU_AMI_ID}"
 ```
 
 {{% /alert %}}
@@ -75,9 +75,17 @@ The following cluster configuration will:
 * Use [AWS EKS managed node groups](https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html) for the kube-system and karpenter namespaces. Uncomment fargateProfiles settings (and comment out managedNodeGroups settings) to use Fargate for both namespaces instead.
 * Set KARPENTER_IAM_ROLE_ARN variables.
 * Create a role to allow spot instances.
-* Run helm to install karpenter
+* Run Helm to install Karpenter
 
-{{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step02-create-cluster.sh" language="bash"%}}
+{{< tabpane text=true right=false >}}
+  {{% tab header="**Create cluster command**:" disabled=true /%}}
+  {{% tab header="Managed NodeGroups" %}}
+  {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step02-create-cluster.sh" language="bash"%}}
+  {{% /tab %}}
+  {{% tab header="Fargate" %}}
+  {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step02-create-cluster-fargate.sh" language="bash"%}}
+  {{% /tab %}}
+{{< /tabpane >}}
 
 {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step06-add-spot-role.sh" language="bash"%}}
 
@@ -88,7 +96,27 @@ See [Enabling Windows support](https://docs.aws.amazon.com/eks/latest/userguide/
 
 ### 4. Install Karpenter
 
-{{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step08-apply-helm-chart.sh" language="bash"%}}
+{{< tabpane text=true right=false >}}
+  {{% tab header="**Karpenter installation command**:" disabled=true /%}}
+  {{% tab header="Managed NodeGroups" %}}
+  {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step08-apply-helm-chart.sh" language="bash"%}}
+  {{% /tab %}}
+  {{% tab header="Fargate" %}}
+  {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step08-apply-helm-chart-fargate.sh" language="bash"%}}
+  {{% /tab %}}
+{{< /tabpane >}}
+
+As the OCI Helm chart is signed by [Cosign](https://github.com/sigstore/cosign) as part of the release process you can verify the chart before installing it by running the following command.
+
+```bash
+cosign verify public.ecr.aws/karpenter/karpenter:{{< param "latest_release_version" >}} \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp='https://github\.com/aws/karpenter-provider-aws/\.github/workflows/release\.yaml@.+' \
+  --certificate-github-workflow-repository=aws/karpenter-provider-aws \
+  --certificate-github-workflow-name=Release \
+  --certificate-github-workflow-ref=refs/tags/v{{< param "latest_release_version" >}} \
+  --annotations version={{< param "latest_release_version" >}}
+```
 
 {{% alert title="DNS Policy Notice" color="warning" %}}
 Karpenter uses the `ClusterFirst` pod DNS policy by default. This is the Kubernetes cluster default and this ensures that Karpetner can reach-out to internal Kubernetes services during its lifetime. There may be cases where you do not have the DNS service that you are using on your cluster up-and-running before Karpenter starts up. The most common case of this is you want Karpenter to manage the node capacity where your DNS service pods are running.
@@ -97,11 +125,11 @@ If you need Karpenter to manage the DNS service pods' capacity, this means that 
 {{% /alert %}}
 
 {{% alert title="Common Expression Language/Webhooks Notice" color="warning" %}}
-Karpenter supports using [Kubernetes Common Expression Language](https://kubernetes.io/docs/reference/using-api/cel/) for validating its Custom Resource Definitions out-of-the-box; however, this feature is not supported on versions of Kubernetes < 1.25. If you are running an earlier version of Kubernetes, you will need to use the Karpenter admission webhooks for validation instead. You can enable these webhooks with `--set webhook.enabled=true` when applying the Karpenter helm chart.
+Karpenter supports using [Kubernetes Common Expression Language](https://kubernetes.io/docs/reference/using-api/cel/) for validating its Custom Resource Definitions out-of-the-box; however, this feature is not supported on versions of Kubernetes < 1.25. If you are running an earlier version of Kubernetes, you will need to use the Karpenter admission webhooks for validation instead. You can enable these webhooks with `--set webhook.enabled=true` when applying the Karpenter Helm chart.
 {{% /alert %}}
 
 {{% alert title="Pod Identity Supports Notice" color="warning" %}}
-Karpenter now supports using [Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) to authenticate AWS SDK to make API requests to AWS services using AWS Identity and Access Management (IAM) permissions. This feature not supported on versions of Kubernetes < 1.24.  If you are running an earlier version of Kubernetes, you will need to use the [IAM Roles for Service Accounts(IRSA)](https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/setting-up-enable-IAM.html) for pod authentication instead. You can enable these IRSA with `--set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${KARPENTER_IAM_ROLE_ARN}"` when applying the Karpenter helm chart.
+Karpenter now supports using [Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) to authenticate AWS SDK to make API requests to AWS services using AWS Identity and Access Management (IAM) permissions. This feature not supported on versions of Kubernetes < 1.24.  If you are running an earlier version of Kubernetes, you will need to use the [IAM Roles for Service Accounts(IRSA)](https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/setting-up-enable-IAM.html) for pod authentication instead. You can enable these IRSA with `--set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${KARPENTER_IAM_ROLE_ARN}"` when applying the Karpenter Helm chart.
 {{% /alert %}}
 
 {{% alert title="Warning" color="warning" %}}
@@ -177,7 +205,7 @@ The section below covers advanced installation techniques for installing Karpent
 
 ### Private Clusters
 
-You can optionally install Karpenter on a [private cluster](https://docs.aws.amazon.com/eks/latest/userguide/private-clusters.html#private-cluster-requirements) using the `eksctl` installation by setting `privateCluster.enabled` to true in your [ClusterConfig](https://eksctl.io/usage/eks-private-cluster/#eks-fully-private-cluster) and by setting `--set settings.isolatedVPC=true` when installing the `karpenter` helm chart.
+You can optionally install Karpenter on a [private cluster](https://docs.aws.amazon.com/eks/latest/userguide/private-clusters.html#private-cluster-requirements) using the `eksctl` installation by setting `privateCluster.enabled` to true in your [ClusterConfig](https://eksctl.io/usage/eks-private-cluster/#eks-fully-private-cluster) and by setting `--set settings.isolatedVPC=true` when installing the `karpenter` Helm chart.
 
 ```bash
 privateCluster:
@@ -194,6 +222,7 @@ com.amazonaws.<region>.s3 – For pulling container images
 com.amazonaws.<region>.sts – For IAM roles for service accounts
 com.amazonaws.<region>.ssm - For resolving default AMIs
 com.amazonaws.<region>.sqs - For accessing SQS if using interruption handling
+com.amazonaws.<region>.eks - For Karpenter to discover the cluster endpoint
 ```
 
 If you do not currently have these endpoints surfaced in your VPC, you can add the endpoints by running
@@ -239,7 +268,7 @@ caused by: Post "https://api.pricing.us-east-1.amazonaws.com/": dial tcp 52.94.2
 
 Kubernetes uses [FlowSchemas](https://kubernetes.io/docs/concepts/cluster-administration/flow-control/#flowschema) and [PriorityLevelConfigurations](https://kubernetes.io/docs/concepts/cluster-administration/flow-control/#prioritylevelconfiguration) to map calls to the API server into buckets which determine each user agent's throttling limits.
 
-By default, Karpenter is installed into the `kube-system` namespace, which leverages the `system-leader-election` and `kube-system-service-accounts` [FlowSchemas] to map calls from the `kube-system` namespace to the `leader-election` and `workload-high` PriorityLevelConfigurations respectively. By putting Karpenter in these PriorityLevelConfigurations, we ensure that Karpenter and other critical cluster components are able to run even if other components on the cluster are throttled in other PriorityLevelConfigurations.
+By default, Karpenter is installed into the `kube-system` namespace, which leverages the `system-leader-election` and `kube-system-service-accounts` [FlowSchemas](https://kubernetes.io/docs/concepts/cluster-administration/flow-control/#flowschema) to map calls from the `kube-system` namespace to the `leader-election` and `workload-high` PriorityLevelConfigurations respectively. By putting Karpenter in these PriorityLevelConfigurations, we ensure that Karpenter and other critical cluster components are able to run even if other components on the cluster are throttled in other PriorityLevelConfigurations.
 
 If you install Karpenter in a different namespace than the default `kube-system` namespace, Karpenter will not be put into these higher-priority FlowSchemas by default. Instead, you will need to create custom FlowSchemas for the namespace and service account where Karpenter is installed to ensure that requests are put into this higher PriorityLevelConfiguration.
 

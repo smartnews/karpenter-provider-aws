@@ -14,7 +14,7 @@ See [Configuring NodePools]({{< ref "./concepts/#configuring-nodepools" >}}) for
 AWS is the first cloud provider supported by Karpenter, although it is designed to be used with other cloud providers as well.
 
 ### Can I write my own cloud provider for Karpenter?
-Yes, but there is no documentation yet for it. Start with Karpenter's GitHub [cloudprovider](https://github.com/aws/karpenter-core/tree/v0.32.6/pkg/cloudprovider) documentation to see how the AWS provider is built, but there are other sections of the code that will require changes too.
+Yes, but there is no documentation yet for it. Start with Karpenter's GitHub [cloudprovider](https://github.com/aws/karpenter-core/tree/v0.32.9/pkg/cloudprovider) documentation to see how the AWS provider is built, but there are other sections of the code that will require changes too.
 
 ### What operating system nodes does Karpenter deploy?
 When using v1beta1 APIs, Karpenter uses the OS defined by the [AMI Family in your EC2NodeClass]({{< ref "./concepts/nodeclasses#specamifamily" >}}).
@@ -27,7 +27,7 @@ Karpenter has multiple mechanisms for configuring the [operating system]({{< ref
 Karpenter is flexible to multi-architecture configurations using [well known labels]({{< ref "./concepts/scheduling/#supported-labels">}}).
 
 ### What RBAC access is required?
-All the required RBAC rules can be found in the helm chart template. See [clusterrole-core.yaml](https://github.com/aws/karpenter/blob/v0.32.6/charts/karpenter/templates/clusterrole-core.yaml), [clusterrole.yaml](https://github.com/aws/karpenter/blob/v0.32.6/charts/karpenter/templates/clusterrole.yaml), [rolebinding.yaml](https://github.com/aws/karpenter/blob/v0.32.6/charts/karpenter/templates/rolebinding.yaml), and [role.yaml](https://github.com/aws/karpenter/blob/v0.32.6/charts/karpenter/templates/role.yaml) files for details.
+All the required RBAC rules can be found in the helm chart template. See [clusterrole-core.yaml](https://github.com/aws/karpenter/blob/v0.32.9/charts/karpenter/templates/clusterrole-core.yaml), [clusterrole.yaml](https://github.com/aws/karpenter/blob/v0.32.9/charts/karpenter/templates/clusterrole.yaml), [rolebinding.yaml](https://github.com/aws/karpenter/blob/v0.32.9/charts/karpenter/templates/rolebinding.yaml), and [role.yaml](https://github.com/aws/karpenter/blob/v0.32.9/charts/karpenter/templates/role.yaml) files for details.
 
 ### Can I run Karpenter outside of a Kubernetes cluster?
 Yes, as long as the controller has network and IAM/RBAC access to the Kubernetes API and your provider API.
@@ -180,10 +180,10 @@ Yes, see the [KubeletConfiguration Section in the NodePool docs]({{<ref "./conce
 The difference between the Core and Full variants is that Core is a minimal OS with less components and no graphic user interface (GUI) or desktop experience.
 `Windows2019` and `Windows2022` AMI families use the Windows Server Core option for simplicity, but if required, you can specify a custom AMI to run Windows Server Full.
 
-You can specify the [Amazon EKS optimized AMI](https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-windows-ami.html) with Windows Server 2022 Full for Kubernetes {{< param "latest_k8s_version" >}} by configuring an `amiSelector` that references the AMI name.
+You can specify the [Amazon EKS optimized AMI](https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-windows-ami.html) with Windows Server 2022 Full for Kubernetes 1.28 by configuring an `amiSelector` that references the AMI name.
 ```yaml
 amiSelectorTerms:
-    - name: Windows_Server-2022-English-Full-EKS_Optimized-{{< param "latest_k8s_version" >}}*
+    - name: Windows_Server-2022-English-Full-EKS_Optimized-1.28*
 ```
 
 ## Deprovisioning

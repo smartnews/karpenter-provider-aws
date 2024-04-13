@@ -43,7 +43,7 @@ make delete # Uninstall Karpenter
 ### Developer Loop
 
 * Make sure dependencies are installed
-    * Run `make codegen` to make sure yaml manifests are generated
+    * Run `make codegen` to make sure yaml manifests are generated (requires a working set of AWS credentials, see [Specifying Credentials](https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials))
     * Run `make toolchain` to install cli tools for building and testing the project
 * You will need a personal development image repository (e.g. ECR)
     * Make sure you have valid credentials to your development repository.
@@ -73,7 +73,8 @@ make test       # E2E correctness tests
 
 ### Change Log Level
 
-By default, `make apply` will set the log level to debug. You can change the log level by setting the log level in your helm values. 
+By default, `make apply` will set the log level to debug. You can change the log level by setting the log level in your Helm values.
+
 ```bash
 --set logLevel=debug
 ```

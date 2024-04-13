@@ -15,15 +15,11 @@ Before you begin upgrading Karpenter, consider Karpenter compatibility issues re
 
 [comment]: <> (the content below is generated from hack/docs/compataiblitymetrix_gen_docs.go)
 
-| KUBERNETES |  1.23   |  1.24   |  1.25   |  1.26   |  1.27   |  1.28   |
-|------------|---------|---------|---------|---------|---------|---------|
-| karpenter  | 0.21.x+ | 0.21.x+ | 0.25.x+ | 0.28.x+ | 0.28.x+ | 0.31.x+ |
+| KUBERNETES |   1.23   |   1.24   |   1.25   |   1.26   |   1.27   |   1.28   |    1.29    |
+|------------|----------|----------|----------|----------|----------|----------|------------|
+| karpenter  | \>= 0.21 | \>= 0.21 | \>= 0.25 | \>= 0.28 | \>= 0.28 | \>= 0.31 | \>= 0.34.0 |
 
 [comment]: <> (end docs generated content from hack/docs/compataiblitymetrix_gen_docs.go)
-
-{{% alert title="Note" color="warning" %}}
-The Ubuntu EKS optimized AMI has moved from 20.04 to 22.04 for Kubernetes 1.29+. This new AMI version is __not currently__ supported for users relying on AMI auto-discovery with the Ubuntu AMI family. More details can be found in this [GitHub issue](https://github.com/aws/karpenter-provider-aws/issues/5572). Please review this issue before upgrading to Kubernetes 1.29 if you are using the Ubuntu AMI family. Upgrading to 1.29 without making any changes to your EC2NodeClass will result in Karpenter being unable to create new nodes.
-{{% /alert %}}
 
 {{% alert title="Note" color="warning" %}}
 Karpenter currently does not support the following [new `topologySpreadConstraints` keys](https://kubernetes.io/blog/2023/04/17/fine-grained-pod-topology-spread-features-beta/), promoted to beta in Kubernetes 1.27:
@@ -35,7 +31,7 @@ For more information on Karpenter's support for these keys, view [this tracking 
 {{% /alert %}}
 
 {{% alert title="Note" color="warning" %}}
-Karpenter supports using [Kubernetes Common Expression Language](https://kubernetes.io/docs/reference/using-api/cel/) for validating its Custom Resource Definitions out-of-the-box; however, this feature is not supported on versions of Kubernetes < 1.25. If you are running an earlier version of Kubernetes, you will need to use the Karpenter admission webhooks for validation instead. You can enable these webhooks with `--set webhook.enabled=true` when applying the Karpenter helm chart.
+Karpenter supports using [Kubernetes Common Expression Language](https://kubernetes.io/docs/reference/using-api/cel/) for validating its Custom Resource Definitions out-of-the-box; however, this feature is not supported on versions of Kubernetes < 1.25. If you are running an earlier version of Kubernetes, you will need to use the Karpenter admission webhooks for validation instead. You can enable these webhooks with `--set webhook.enabled=true` when applying the Karpenter Helm chart.
 {{% /alert %}}
 
 ## Compatibility issues
@@ -43,7 +39,7 @@ Karpenter supports using [Kubernetes Common Expression Language](https://kuberne
 When we introduce a breaking change, we do so only as described in this document.
 
 Karpenter follows [Semantic Versioning 2.0.0](https://semver.org/) in its stable release versions, while in
-major version zero (v0.y.z) [anything may change at any time](https://semver.org/#spec-item-4).
+major version zero (`0.y.z`) [anything may change at any time](https://semver.org/#spec-item-4).
 However, to further protect users during this phase we will only introduce breaking changes in minor releases (releases that increment y in x.y.z).
 Note this does not mean every minor upgrade has a breaking change as we will also increment the
 minor version when we release a new feature.
@@ -55,7 +51,7 @@ Users should therefore check to see if there is a breaking change every time the
 When there is a breaking change we will:
 
 * Increment the minor version when in major version 0
-* Add a permanent separate section named `upgrading to vx.y.z+` under [release upgrade notes](#release-upgrade-notes)
+* Add a permanent separate section named `upgrading to x.y.z+` under [release upgrade notes](#release-upgrade-notes)
   clearly explaining the breaking change and what needs to be done on the user side to ensure a safe upgrade
 * Add the sentence “This is a breaking change, please refer to the above link for upgrade instructions” to the top of the release notes and in all our announcements
 
@@ -81,7 +77,7 @@ Karpenter offers three types of releases. This section explains the purpose of e
 
 Stable releases are the most reliable releases that are released with weekly cadence. Stable releases are our only recommended versions for production environments.
 Sometimes we skip a stable release because we find instability or problems that need to be fixed before having a stable release.
-Stable releases are tagged with Semantic Versioning. For example `v0.13.0`.
+Stable releases are tagged with a semantic version prefixed by a `v`. For example `v0.13.0`.
 
 ### Release Candidates
 
@@ -93,7 +89,7 @@ By adopting this practice we allow our users who are early adopters to test out 
 We release a snapshot release for every commit that gets merged into [`aws/karpenter-provider-aws`](https://www.github.com/aws/karpenter-provider-aws). This enables users to immediately try a new feature or fix right after it's merged rather than waiting days or weeks for release.
 
 Snapshot releases are not made available in the same public ECR repository as other release types, they are instead published to a separate private ECR repository.
-Helm charts are published to `oci://{{< param "snapshot_repo.account_id" >}}.dkr.ecr.{{< param "snapshot_repo.region" >}}.amazonaws.com/karpenter/snapshot/karpenter` and are tagged with the git commit hash prefixed by the Karpenter major version (e.g. `v0-fc17bfc89ebb30a3b102a86012b3e3992ec08adf`).
+Helm charts are published to `oci://{{< param "snapshot_repo.account_id" >}}.dkr.ecr.{{< param "snapshot_repo.region" >}}.amazonaws.com/karpenter/snapshot/karpenter` and are tagged with the git commit hash prefixed by the Karpenter major version (e.g. `0-fc17bfc89ebb30a3b102a86012b3e3992ec08adf`).
 Anyone with an AWS account can pull from this repository, but must first authenticate:
 
 ```bash
@@ -103,4 +99,3 @@ aws ecr get-login-password --region {{< param "snapshot_repo.region" >}} | docke
 {{% alert title="Note" color="warning" %}}
 Snapshot releases are suitable for testing, and troubleshooting but they should not be used in production environments. Snapshot releases are ephemeral and will be removed 90 days after they were published.
 {{% /alert %}}
-

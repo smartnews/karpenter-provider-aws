@@ -23,12 +23,14 @@ import (
 	"github.com/imdario/mergo"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	_ "knative.dev/pkg/system/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 	"sigs.k8s.io/karpenter/pkg/events"
@@ -42,7 +44,6 @@ import (
 	"github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclass"
 	"github.com/aws/karpenter-provider-aws/pkg/fake"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
-	"github.com/aws/karpenter-provider-aws/pkg/providers/instanceprofile"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -105,6 +106,46 @@ var _ = Describe("NodeClassController", func() {
 					},
 				},
 			},
+		})
+	})
+	Context("Cluster CIDR Resolution", func() {
+		BeforeEach(func() {
+			// Cluster CIDR will only be resolved once per lifetime of the launch template provider, reset to nil between tests
+			awsEnv.LaunchTemplateProvider.ClusterCIDR.Store(nil)
+		})
+		It("shouldn't resolve cluster CIDR for non-AL2023 NodeClasses", func() {
+			for _, family := range []string{
+				v1beta1.AMIFamilyAL2,
+				v1beta1.AMIFamilyBottlerocket,
+				v1beta1.AMIFamilyUbuntu,
+				v1beta1.AMIFamilyWindows2019,
+				v1beta1.AMIFamilyWindows2022,
+				v1beta1.AMIFamilyCustom,
+			} {
+				nodeClass.Spec.AMIFamily = lo.ToPtr(family)
+				ExpectApplied(ctx, env.Client, nodeClass)
+				ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+				Expect(awsEnv.LaunchTemplateProvider.ClusterCIDR.Load()).To(BeNil())
+			}
+		})
+		It("should resolve cluster CIDR for IPv4 clusters", func() {
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1beta1.AMIFamilyAL2023)
+			ExpectApplied(ctx, env.Client, nodeClass)
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			Expect(lo.FromPtr(awsEnv.LaunchTemplateProvider.ClusterCIDR.Load())).To(Equal("10.100.0.0/16"))
+		})
+		It("should resolve cluster CIDR for IPv6 clusters", func() {
+			awsEnv.EKSAPI.DescribeClusterBehavior.Output.Set(&eks.DescribeClusterOutput{
+				Cluster: &eks.Cluster{
+					KubernetesNetworkConfig: &eks.KubernetesNetworkConfigResponse{
+						ServiceIpv6Cidr: lo.ToPtr("2001:db8::/64"),
+					},
+				},
+			})
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1beta1.AMIFamilyAL2023)
+			ExpectApplied(ctx, env.Client, nodeClass)
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			Expect(lo.FromPtr(awsEnv.LaunchTemplateProvider.ClusterCIDR.Load())).To(Equal("2001:db8::/64"))
 		})
 	})
 	Context("Subnet Status", func() {
@@ -589,68 +630,88 @@ var _ = Describe("NodeClassController", func() {
 				{
 					Name: "test-ami-3",
 					ID:   "ami-id-789",
-					Requirements: []v1.NodeSelectorRequirement{
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureArm64},
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureArm64},
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceGPUCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceAcceleratorCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
-						},
-					},
-				},
-				{
-					Name: "test-ami-2",
-					ID:   "ami-id-456",
-					Requirements: []v1.NodeSelectorRequirement{
-						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureAmd64},
-						},
-						{
-							Key:      v1beta1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpExists,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceAcceleratorCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 					},
 				},
 				{
 					Name: "test-ami-2",
 					ID:   "ami-id-456",
-					Requirements: []v1.NodeSelectorRequirement{
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureAmd64},
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureAmd64},
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceAcceleratorCount,
-							Operator: v1.NodeSelectorOpExists,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceGPUCount,
+								Operator: v1.NodeSelectorOpExists,
+							},
+						},
+					},
+				},
+				{
+					Name: "test-ami-2",
+					ID:   "ami-id-456",
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
+						{
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureAmd64},
+							},
+						},
+						{
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceAcceleratorCount,
+								Operator: v1.NodeSelectorOpExists,
+							},
 						},
 					},
 				},
 				{
 					Name: "test-ami-1",
 					ID:   "ami-id-123",
-					Requirements: []v1.NodeSelectorRequirement{
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureAmd64},
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureAmd64},
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceGPUCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceAcceleratorCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceAcceleratorCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 					},
 				},
@@ -697,38 +758,50 @@ var _ = Describe("NodeClassController", func() {
 				{
 					Name: "test-ami-2",
 					ID:   "ami-id-456",
-					Requirements: []v1.NodeSelectorRequirement{
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureArm64},
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureArm64},
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceGPUCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceAcceleratorCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceAcceleratorCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 					},
 				},
 				{
 					Name: "test-ami-1",
 					ID:   "ami-id-123",
-					Requirements: []v1.NodeSelectorRequirement{
+					Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 						{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
-							Values:   []string{corev1beta1.ArchitectureAmd64},
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1.LabelArchStable,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{corev1beta1.ArchitectureAmd64},
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceGPUCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 						{
-							Key:      v1beta1.LabelInstanceAcceleratorCount,
-							Operator: v1.NodeSelectorOpDoesNotExist,
+							NodeSelectorRequirement: v1.NodeSelectorRequirement{
+								Key:      v1beta1.LabelInstanceAcceleratorCount,
+								Operator: v1.NodeSelectorOpDoesNotExist,
+							},
 						},
 					},
 				},
@@ -743,12 +816,14 @@ var _ = Describe("NodeClassController", func() {
 					{
 						Name: "test-ami-3",
 						ID:   "ami-test3",
-						Requirements: []v1.NodeSelectorRequirement{
+						Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 							{
-								Key:      "kubernetes.io/arch",
-								Operator: "In",
-								Values: []string{
-									"amd64",
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      "kubernetes.io/arch",
+									Operator: "In",
+									Values: []string{
+										"amd64",
+									},
 								},
 							},
 						},
@@ -758,7 +833,7 @@ var _ = Describe("NodeClassController", func() {
 		})
 	})
 	Context("Static Drift Hash", func() {
-		DescribeTable("should update the static drift hash when static field is updated", func(changes *v1beta1.EC2NodeClass) {
+		DescribeTable("should update the drift hash when static field is updated", func(changes *v1beta1.EC2NodeClass) {
 			ExpectApplied(ctx, env.Client, nodeClass)
 			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
 			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
@@ -785,7 +860,7 @@ var _ = Describe("NodeClassController", func() {
 			Entry("MetadataOptions Drift", &v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPEndpoint: aws.String("disabled")}}}),
 			Entry("Context Drift", &v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{Context: aws.String("context-2")}}),
 		)
-		It("should not update the static drift hash when dynamic field is updated", func() {
+		It("should not update the drift hash when dynamic field is updated", func() {
 			ExpectApplied(ctx, env.Client, nodeClass)
 			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
 			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
@@ -814,11 +889,133 @@ var _ = Describe("NodeClassController", func() {
 			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
 			Expect(nodeClass.Annotations[v1beta1.AnnotationEC2NodeClassHash]).To(Equal(expectedHash))
 		})
+		It("should update ec2nodeclass-hash-version annotation when the ec2nodeclass-hash-version on the NodeClass does not match with the controller hash version", func() {
+			nodeClass.Annotations = map[string]string{
+				v1beta1.AnnotationEC2NodeClassHash:        "abceduefed",
+				v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+			}
+			ExpectApplied(ctx, env.Client, nodeClass)
+
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
+
+			expectedHash := nodeClass.Hash()
+			// Expect ec2nodeclass-hash on the NodeClass to be updated
+			Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
+			Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+		})
+		It("should update ec2nodeclass-hash-versions on all NodeClaims when the ec2nodeclass-hash-version does not match with the controller hash version", func() {
+			nodeClass.Annotations = map[string]string{
+				v1beta1.AnnotationEC2NodeClassHash:        "abceduefed",
+				v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+			}
+			nodeClaimOne := coretest.NodeClaim(corev1beta1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.AnnotationEC2NodeClassHash:        "123456",
+						v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+					},
+				},
+				Spec: corev1beta1.NodeClaimSpec{
+					NodeClassRef: &corev1beta1.NodeClassReference{
+						Name: nodeClass.Name,
+					},
+				},
+			})
+			nodeClaimTwo := coretest.NodeClaim(corev1beta1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.AnnotationEC2NodeClassHash:        "123456",
+						v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+					},
+				},
+				Spec: corev1beta1.NodeClaimSpec{
+					NodeClassRef: &corev1beta1.NodeClassReference{
+						Name: nodeClass.Name,
+					},
+				},
+			})
+
+			ExpectApplied(ctx, env.Client, nodeClass, nodeClaimOne, nodeClaimTwo)
+
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
+			nodeClaimOne = ExpectExists(ctx, env.Client, nodeClaimOne)
+			nodeClaimTwo = ExpectExists(ctx, env.Client, nodeClaimTwo)
+
+			expectedHash := nodeClass.Hash()
+			// Expect ec2nodeclass-hash on the NodeClaims to be updated
+			Expect(nodeClaimOne.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
+			Expect(nodeClaimOne.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+			Expect(nodeClaimTwo.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
+			Expect(nodeClaimTwo.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+		})
+		It("should not update ec2nodeclass-hash on all NodeClaims when the ec2nodeclass-hash-version matches the controller hash version", func() {
+			nodeClass.Annotations = map[string]string{
+				v1beta1.AnnotationEC2NodeClassHash:        "abceduefed",
+				v1beta1.AnnotationEC2NodeClassHashVersion: "test-version",
+			}
+			nodeClaim := coretest.NodeClaim(corev1beta1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.AnnotationEC2NodeClassHash:        "1234564654",
+						v1beta1.AnnotationEC2NodeClassHashVersion: v1beta1.EC2NodeClassHashVersion,
+					},
+				},
+				Spec: corev1beta1.NodeClaimSpec{
+					NodeClassRef: &corev1beta1.NodeClassReference{
+						Name: nodeClass.Name,
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodeClass, nodeClaim)
+
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			expectedHash := nodeClass.Hash()
+
+			// Expect ec2nodeclass-hash on the NodeClass to be updated
+			Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
+			Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+			// Expect ec2nodeclass-hash on the NodeClaims to stay the same
+			Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, "1234564654"))
+			Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+		})
+		It("should not update ec2nodeclass-hash on the NodeClaim if it's drifted and the ec2nodeclass-hash-version does not match the controller hash version", func() {
+			nodeClass.Annotations = map[string]string{
+				v1beta1.AnnotationEC2NodeClassHash:        "abceduefed",
+				v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+			}
+			nodeClaim := coretest.NodeClaim(corev1beta1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.AnnotationEC2NodeClassHash:        "123456",
+						v1beta1.AnnotationEC2NodeClassHashVersion: "test",
+					},
+				},
+				Spec: corev1beta1.NodeClaimSpec{
+					NodeClassRef: &corev1beta1.NodeClassReference{
+						Name: nodeClass.Name,
+					},
+				},
+			})
+			nodeClaim.StatusConditions().MarkTrue(corev1beta1.Drifted)
+			ExpectApplied(ctx, env.Client, nodeClass, nodeClaim)
+
+			ExpectReconcileSucceeded(ctx, nodeClassController, client.ObjectKeyFromObject(nodeClass))
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+
+			// Expect ec2nodeclass-hash on the NodeClaims to stay the same
+			Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, "123456"))
+			Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+		})
 	})
 	Context("NodeClass Termination", func() {
 		var profileName string
 		BeforeEach(func() {
-			profileName = instanceprofile.GetProfileName(ctx, fake.DefaultRegion, nodeClass)
+			profileName = awsEnv.InstanceProfileProvider.GetProfileName(ctx, fake.DefaultRegion, nodeClass.Name)
 		})
 		It("should not delete the NodeClass if launch template deletion fails", func() {
 			launchTemplateName := aws.String(fake.LaunchTemplateName())
@@ -991,7 +1188,7 @@ var _ = Describe("NodeClassController", func() {
 	Context("Instance Profile Status", func() {
 		var profileName string
 		BeforeEach(func() {
-			profileName = instanceprofile.GetProfileName(ctx, fake.DefaultRegion, nodeClass)
+			profileName = awsEnv.InstanceProfileProvider.GetProfileName(ctx, fake.DefaultRegion, nodeClass.Name)
 		})
 		It("should create the instance profile when it doesn't exist", func() {
 			nodeClass.Spec.Role = "test-role"

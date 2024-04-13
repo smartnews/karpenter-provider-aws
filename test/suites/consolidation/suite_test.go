@@ -154,10 +154,11 @@ var _ = Describe("Consolidation", func() {
 			nodePool.Spec.Disruption.ConsolidateAfter = &corev1beta1.NillableDuration{}
 
 			nodePool = test.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"2xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"2xlarge"},
+					},
 				},
 			)
 			// We're expecting to create 3 nodes, so we'll expect to see at most 2 nodes deleting at one time.
@@ -222,15 +223,19 @@ var _ = Describe("Consolidation", func() {
 			nodePool.Spec.Disruption.ConsolidateAfter = &corev1beta1.NillableDuration{}
 
 			nodePool = test.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"xlarge", "2xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"xlarge", "2xlarge"},
+					},
 				},
 				// Add an Exists operator so that we can select on a fake partition later
-				v1.NodeSelectorRequirement{
-					Key:      "test-partition",
-					Operator: v1.NodeSelectorOpExists,
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      "test-partition",
+						Operator: v1.NodeSelectorOpExists,
+					},
 				},
 			)
 			nodePool.Labels = appLabels
@@ -283,14 +288,15 @@ var _ = Describe("Consolidation", func() {
 
 			env.ExpectCreated(nodeClass, nodePool, deployments[0], deployments[1], deployments[2], deployments[3], deployments[4])
 
-			env.EventuallyExpectCreatedNodeClaimCount("==", 5)
-			nodes := env.EventuallyExpectCreatedNodeCount("==", 5)
+			originalNodeClaims := env.EventuallyExpectCreatedNodeClaimCount("==", 5)
+			originalNodes := env.EventuallyExpectCreatedNodeCount("==", 5)
+
 			// Check that all daemonsets and deployment pods are online
 			env.EventuallyExpectHealthyPodCount(selector, int(numPods)*2)
 
 			By("cordoning and adding finalizer to the nodes")
 			// Add a finalizer to each node so that we can stop termination disruptions
-			for _, node := range nodes {
+			for _, node := range originalNodes {
 				Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(node), node)).To(Succeed())
 				node.Finalizers = append(node.Finalizers, common.TestingFinalizer)
 				env.ExpectUpdated(node)
@@ -305,16 +311,22 @@ var _ = Describe("Consolidation", func() {
 			nodePool.Spec.Disruption.ConsolidateAfter = nil
 			env.ExpectUpdated(nodePool)
 
-			// Ensure that we get two nodes tainted, and they have overlap during the consolidation
+			// Ensure that we get three nodes tainted, and they have overlap during the consolidation
 			env.EventuallyExpectTaintedNodeCount("==", 3)
 			env.EventuallyExpectNodeClaimCount("==", 8)
 			env.EventuallyExpectNodeCount("==", 8)
-			nodes = env.ConsistentlyExpectDisruptionsWithNodeCount(3, 8, 5*time.Second)
+			env.ConsistentlyExpectDisruptionsWithNodeCount(3, 8, 5*time.Second)
 
-			for _, node := range nodes {
+			for _, node := range originalNodes {
 				Expect(env.ExpectTestingFinalizerRemoved(node)).To(Succeed())
 			}
-			env.EventuallyExpectNotFound(nodes[0], nodes[1], nodes[2])
+
+			// Eventually expect all the nodes to be rolled and completely removed
+			// Since this completes the disruption operation, this also ensures that we aren't leaking nodes into subsequent
+			// tests since nodeclaims that are actively replacing but haven't brought-up nodes yet can register nodes later
+			env.EventuallyExpectNotFound(lo.Map(originalNodes, func(n *v1.Node, _ int) client.Object { return n })...)
+			env.EventuallyExpectNotFound(lo.Map(originalNodeClaims, func(n *corev1beta1.NodeClaim, _ int) client.Object { return n })...)
+			env.ExpectNodeClaimCount("==", 5)
 			env.ExpectNodeCount("==", 5)
 		})
 		It("should not allow consolidation if the budget is fully blocking", func() {
@@ -395,23 +407,30 @@ var _ = Describe("Consolidation", func() {
 					},
 					Template: corev1beta1.NodeClaimTemplate{
 						Spec: corev1beta1.NodeClaimSpec{
-							Requirements: []v1.NodeSelectorRequirement{
+							Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 								{
-									Key:      corev1beta1.CapacityTypeLabelKey,
-									Operator: v1.NodeSelectorOpIn,
-									Values:   lo.Ternary(spotToSpot, []string{corev1beta1.CapacityTypeSpot}, []string{corev1beta1.CapacityTypeOnDemand}),
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      corev1beta1.CapacityTypeLabelKey,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   lo.Ternary(spotToSpot, []string{corev1beta1.CapacityTypeSpot}, []string{corev1beta1.CapacityTypeOnDemand}),
+									},
 								},
 								{
-									Key:      v1beta1.LabelInstanceSize,
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"medium", "large", "xlarge"},
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1beta1.LabelInstanceSize,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"medium", "large", "xlarge"},
+									},
 								},
 								{
-									Key:      v1beta1.LabelInstanceFamily,
-									Operator: v1.NodeSelectorOpNotIn,
-									// remove some cheap burstable and the odd c1 instance types so we have
-									// more control over what gets provisioned
-									Values: []string{"t2", "t3", "c1", "t3a", "t4g"},
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1beta1.LabelInstanceFamily,
+										Operator: v1.NodeSelectorOpNotIn,
+										// remove some cheap burstable and the odd c1 instance types so we have
+										// more control over what gets provisioned
+										// TODO: jmdeal@ remove a1 from exclusion list once Karpenter implicitly filters a1 instances for AL2023 AMI family (incompatible)
+										Values: []string{"t2", "t3", "c1", "t3a", "t4g", "a1"},
+									},
 								},
 							},
 							NodeClassRef: &corev1beta1.NodeClassReference{Name: nodeClass.Name},
@@ -467,16 +486,29 @@ var _ = Describe("Consolidation", func() {
 					},
 					Template: corev1beta1.NodeClaimTemplate{
 						Spec: corev1beta1.NodeClaimSpec{
-							Requirements: []v1.NodeSelectorRequirement{
+							Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 								{
-									Key:      corev1beta1.CapacityTypeLabelKey,
-									Operator: v1.NodeSelectorOpIn,
-									Values:   lo.Ternary(spotToSpot, []string{corev1beta1.CapacityTypeSpot}, []string{corev1beta1.CapacityTypeOnDemand}),
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      corev1beta1.CapacityTypeLabelKey,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   lo.Ternary(spotToSpot, []string{corev1beta1.CapacityTypeSpot}, []string{corev1beta1.CapacityTypeOnDemand}),
+									},
 								},
 								{
-									Key:      v1beta1.LabelInstanceSize,
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"large", "2xlarge"},
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1beta1.LabelInstanceSize,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"large", "2xlarge"},
+									},
+								},
+								{
+									NodeSelectorRequirement: v1.NodeSelectorRequirement{
+										Key:      v1beta1.LabelInstanceFamily,
+										Operator: v1.NodeSelectorOpNotIn,
+										// remove some cheap burstable and the odd c1 / a1 instance types so we have
+										// more control over what gets provisioned
+										Values: []string{"t2", "t3", "c1", "t3a", "t4g", "a1"},
+									},
 								},
 							},
 							NodeClassRef: &corev1beta1.NodeClassReference{Name: nodeClass.Name},
@@ -590,16 +622,29 @@ var _ = Describe("Consolidation", func() {
 				},
 				Template: corev1beta1.NodeClaimTemplate{
 					Spec: corev1beta1.NodeClaimSpec{
-						Requirements: []v1.NodeSelectorRequirement{
+						Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{
 							{
-								Key:      corev1beta1.CapacityTypeLabelKey,
-								Operator: v1.NodeSelectorOpIn,
-								Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      corev1beta1.CapacityTypeLabelKey,
+									Operator: v1.NodeSelectorOpIn,
+									Values:   []string{corev1beta1.CapacityTypeOnDemand},
+								},
 							},
 							{
-								Key:      v1beta1.LabelInstanceSize,
-								Operator: v1.NodeSelectorOpIn,
-								Values:   []string{"large"},
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      v1beta1.LabelInstanceSize,
+									Operator: v1.NodeSelectorOpIn,
+									Values:   []string{"large"},
+								},
+							},
+							{
+								NodeSelectorRequirement: v1.NodeSelectorRequirement{
+									Key:      v1beta1.LabelInstanceFamily,
+									Operator: v1.NodeSelectorOpNotIn,
+									// remove some cheap burstable and the odd c1 / a1 instance types so we have
+									// more control over what gets provisioned
+									Values: []string{"t2", "t3", "c1", "t3a", "t4g", "a1"},
+								},
 							},
 						},
 						NodeClassRef: &corev1beta1.NodeClassReference{Name: nodeClass.Name},
@@ -645,14 +690,18 @@ var _ = Describe("Consolidation", func() {
 		// instance than on-demand
 		nodePool.Spec.Disruption.ConsolidateAfter = nil
 		test.ReplaceRequirements(nodePool,
-			v1.NodeSelectorRequirement{
-				Key:      corev1beta1.CapacityTypeLabelKey,
-				Operator: v1.NodeSelectorOpExists,
+			corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpExists,
+				},
 			},
-			v1.NodeSelectorRequirement{
-				Key:      v1beta1.LabelInstanceSize,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"large"},
+			corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      v1beta1.LabelInstanceSize,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"large"},
+				},
 			},
 		)
 		env.ExpectUpdated(nodePool)

@@ -13,7 +13,7 @@ The finalizer blocks deletion of the node object while the Termination Controlle
 
 ### Disruption Controller
 
-Karpenter automatically discovers disruptable nodes and spins up replacements when needed. Karpenter disrupts nodes by executing one [automatic method](#automatic-methods) at a time, in order of Expiration, Drift, and then Consolidation. Each method varies slightly, but they all follow the standard disruption process. Karpenter uses [disruption budgets]({{<ref "#disruption-budgets" >}}) to control the speed of disruption.
+Karpenter automatically discovers disruptable nodes and spins up replacements when needed. Karpenter disrupts nodes by executing one [automated method](#automated-methods) at a time, in order of Expiration, Drift, and then Consolidation. Each method varies slightly, but they all follow the standard disruption process. Karpenter uses [disruption budgets]({{<ref "#disruption-budgets" >}}) to control the speed of disruption.
 1. Identify a list of prioritized candidates for the disruption method.
    * If there are [pods that cannot be evicted](#pod-eviction) on the node, Karpenter will ignore the node and try disrupting it later.
    * If there are no disruptable nodes, continue to the next disruption method.
@@ -29,8 +29,8 @@ Karpenter automatically discovers disruptable nodes and spins up replacements wh
 ### Termination Controller
 
 When a Karpenter node is deleted, the Karpenter finalizer will block deletion and the APIServer will set the `DeletionTimestamp` on the node, allowing Karpenter to gracefully shutdown the node, modeled after [Kubernetes Graceful Node Shutdown](https://kubernetes.io/docs/concepts/architecture/nodes/#graceful-node-shutdown). Karpenter's graceful shutdown process will:
-1. Add the `karpenter.sh/disruption:NoSchedule` taint to the node to prevent pods from scheduling to it.
-2. Begin evicting the pods on the node with the [Kubernetes Eviction API](https://kubernetes.io/docs/concepts/scheduling-eviction/api-eviction/) to respect PDBs, while ignoring all non-daemonset pods and [static pods](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/). Wait for the node to be fully drained before proceeding to Step (3).
+1. Add the `karpenter.sh/disruption=disrupting:NoSchedule` taint to the node to prevent pods from scheduling to it.
+2. Begin evicting the pods on the node with the [Kubernetes Eviction API](https://kubernetes.io/docs/concepts/scheduling-eviction/api-eviction/) to respect PDBs, while ignoring all [static pods](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/), pods tolerating the `karpenter.sh/disruption=disrupting:NoSchedule` taint, and succeeded/failed pods. Wait for the node to be fully drained before proceeding to Step (3).
    * While waiting, if the underlying NodeClaim for the node no longer exists, remove the finalizer to allow the APIServer to delete the node, completing termination.
 3. Terminate the NodeClaim in the Cloud Provider.
 4. Remove the finalizer from the node to allow the APIServer to delete the node, completing termination.
@@ -69,7 +69,7 @@ Automated methods can be rate limited through [NodePool Disruption Budgets]({{<r
 * [**Consolidation**]({{<ref "#consolidation" >}}): Karpenter works to actively reduce cluster cost by identifying when:
   * Nodes can be removed because the node is empty
   * Nodes can be removed as their workloads will run on other nodes in the cluster.
-  * Nodes can be replaced with cheaper variants due to a change in the workloads.
+  * Nodes can be replaced with lower priced variants due to a change in the workloads.
 * [**Drift**]({{<ref "#drift" >}}): Karpenter will mark nodes as drifted and disrupt nodes that have drifted from their desired specification. See [Drift]({{<ref "#drift" >}}) to see which fields are considered.
 * [**Interruption**]({{<ref "#interruption" >}}): Karpenter will watch for upcoming interruption events that could affect your nodes (health events, spot interruption, etc.) and will taint, drain, and terminate the node(s) ahead of the event to reduce workload disruption.
 
@@ -88,12 +88,12 @@ spec:
 
 Karpenter has two mechanisms for cluster consolidation:
 1. **Deletion** - A node is eligible for deletion if all of its pods can run on free capacity of other nodes in the cluster.
-2. **Replace** - A node can be replaced if all of its pods can run on a combination of free capacity of other nodes in the cluster and a single cheaper replacement node.
+2. **Replace** - A node can be replaced if all of its pods can run on a combination of free capacity of other nodes in the cluster and a single lower price replacement node.
 
 Consolidation has three mechanisms that are performed in order to attempt to identify a consolidation action:
 1. **Empty Node Consolidation** - Delete any entirely empty nodes in parallel
-2. **Multi Node Consolidation** - Try to delete two or more nodes in parallel, possibly launching a single replacement that is cheaper than the price of all nodes being removed
-3. **Single Node Consolidation** - Try to delete any single node, possibly launching a single replacement that is cheaper than the price of that node
+2. **Multi Node Consolidation** - Try to delete two or more nodes in parallel, possibly launching a single replacement whose price is lower than that of all nodes being removed
+3. **Single Node Consolidation** - Try to delete any single node, possibly launching a single replacement whose price is lower than that of the node being removed
 
 It's impractical to examine all possible consolidation options for multi-node consolidation, so Karpenter uses a heuristic to identify a likely set of nodes that can be consolidated.  For single-node consolidation we consider each node in the cluster individually.
 
@@ -110,7 +110,7 @@ Events:
   Type     Reason                   Age                From             Message
   ----     ------                   ----               ----             -------
   Normal   Unconsolidatable         66s                karpenter        pdb default/inflate-pdb prevents pod evictions
-  Normal   Unconsolidatable         33s (x3 over 30m)  karpenter        can't replace with a cheaper node
+  Normal   Unconsolidatable         33s (x3 over 30m)  karpenter        can't replace with a lower-priced node
 ```
 
 {{% alert title="Warning" color="warning" %}}
@@ -120,10 +120,10 @@ Using preferred anti-affinity and topology spreads can reduce the effectiveness 
 #### Spot consolidation
 For spot nodes, Karpenter has deletion consolidation enabled by default. If you would like to enable replacement with spot consolidation, you need to enable the feature through the [`SpotToSpotConsolidation` feature flag]({{<ref "../reference/settings#features-gates" >}}).
 
-Cheaper spot instance types are selected with the [`price-capacity-optimized` strategy](https://aws.amazon.com/blogs/compute/introducing-price-capacity-optimized-allocation-strategy-for-ec2-spot-instances/). Often, the cheapest spot instance type is not launched due to the likelihood of interruption. As a result, Karpenter uses the number of available instance type options cheaper than the currently launched spot instance as a heuristic for evaluating whether it should launch a replacement for the current spot node.
+Lower priced spot instance types are selected with the [`price-capacity-optimized` strategy](https://aws.amazon.com/blogs/compute/introducing-price-capacity-optimized-allocation-strategy-for-ec2-spot-instances/). Sometimes, the lowest priced spot instance type is not launched due to the likelihood of interruption. As a result, Karpenter uses the number of available instance type options with a price lower than the currently launched spot instance as a heuristic for evaluating whether it should launch a replacement for the current spot node.
 
 We refer to the number of instances that Karpenter has within its launch decision as a launch's "instance type flexibility." When Karpenter is considering performing a spot-to-spot consolidation replacement, it will check whether replacing the instance type will lead to enough instance type flexibility in the subsequent launch request. As a result, we get the following properties when evaluating for consolidation:
-1) We shouldn't continually consolidate down to the cheapest spot instance which might have very high rates of interruption.
+1) We shouldn't continually consolidate down to the lowest priced spot instance which might have very high rates of interruption.
 2) We launch with enough instance types that there’s high likelihood that our replacement instance has comparable availability to our current one.
 
 Karpenter requires a minimum instance type flexibility of 15 instance types when performing single node spot-to-spot consolidations (1 node to 1 node). It does not have the same instance type flexibility requirement for multi-node spot-to-spot consolidations (many nodes to 1 node) since doing so without requiring flexibility won't lead to "race to the bottom" scenarios.
@@ -197,7 +197,7 @@ You can rate limit Karpenter's disruption through the NodePool's `spec.disruptio
 #### Nodes
 When calculating if a budget will block nodes from disruption, Karpenter lists the total number of nodes owned by a NodePool, subtracting out the nodes owned by that NodePool that are currently being deleted and nodes that are NotReady. If the number of nodes being deleted by Karpenter or any other processes is greater than the number of allowed disruptions, disruption for this node will not proceed.
 
-If the budget is configured with a percentage value, such as `20%`, Karpenter will calculate the number of allowed disruptions as `allowed_disruptions = roundup(total * percentage) - total_deleting - total_notready`. If otherwise defined as a non-percentage value, Karpenter will simply subtract the number of nodes from the total `(total * percentage) - total_deleting - total_notready`. For multiple budgets in a NodePool, Karpenter will take the minimum value (most restrictive) of each of the budgets.
+If the budget is configured with a percentage value, such as `20%`, Karpenter will calculate the number of allowed disruptions as `allowed_disruptions = roundup(total * percentage) - total_deleting - total_notready`. If otherwise defined as a non-percentage value, Karpenter will simply subtract the number of nodes from the total `(total - non_percentage_value) - total_deleting - total_notready`. For multiple budgets in a NodePool, Karpenter will take the minimum value (most restrictive) of each of the budgets.
 
 For example, the following NodePool with three budgets defines the following requirements:
 - The first budget will only allow 20% of nodes owned by that NodePool to be disrupted. For instance, if there were 19 nodes owned by the NodePool, 4 disruptions would be allowed, rounding up from `19 * .2 = 3.8`.
@@ -222,7 +222,7 @@ spec:
 ```
 
 #### Schedule
-Schedule is a cronjob schedule. Generally, the cron syntax is five space-delimited values with options below, with additional special macros like `@yearly`, `monthly`, `@weekly`, `@daily`, `@hourly`.
+Schedule is a cronjob schedule. Generally, the cron syntax is five space-delimited values with options below, with additional special macros like `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`.
 Follow the [Kubernetes documentation](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#writing-a-cronjob-spec) for more information on how to follow the cron syntax.
 
 ```bash
@@ -265,7 +265,7 @@ spec:
 ```
 
 {{% alert title="Note" color="primary" %}}
-This annotation will be ignored for [terminating pods](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-phase), [terminal pods](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-phase) (Failed/Succeeded), [DaemonSet pods](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/), or [static pods](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/).
+This annotation will be ignored for [terminating pods](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-phase) and [terminal pods](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-phase) (Failed/Succeeded).
 {{% /alert %}}
 
 Examples of voluntary node removal that will be prevented by this annotation include:

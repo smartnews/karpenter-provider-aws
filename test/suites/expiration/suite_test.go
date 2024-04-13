@@ -97,10 +97,12 @@ var _ = Describe("Expiration", func() {
 		// and we consistently ensure that the second node is not tainted == disrupted.
 		It("should not continue to disrupt nodes that have been the target of pod nomination", func() {
 			coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"2xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"2xlarge"},
+					},
 				},
 			)
 			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
@@ -178,10 +180,12 @@ var _ = Describe("Expiration", func() {
 		})
 		It("should respect budgets for empty expiration", func() {
 			coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"2xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"2xlarge"},
+					},
 				},
 			)
 			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
@@ -255,10 +259,12 @@ var _ = Describe("Expiration", func() {
 		})
 		It("should respect budgets for non-empty delete expiration", func() {
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"2xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"2xlarge"},
+					},
 				},
 			)
 			// We're expecting to create 3 nodes, so we'll expect to see at most 2 nodes deleting at one time.
@@ -341,15 +347,19 @@ var _ = Describe("Expiration", func() {
 			appLabels := map[string]string{"app": "large-app"}
 
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceSize,
-					Operator: v1.NodeSelectorOpIn,
-					Values:   []string{"xlarge"},
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      v1beta1.LabelInstanceSize,
+						Operator: v1.NodeSelectorOpIn,
+						Values:   []string{"xlarge"},
+					},
 				},
 				// Add an Exists operator so that we can select on a fake partition later
-				v1.NodeSelectorRequirement{
-					Key:      "test-partition",
-					Operator: v1.NodeSelectorOpExists,
+				corev1beta1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						Key:      "test-partition",
+						Operator: v1.NodeSelectorOpExists,
+					},
 				},
 			)
 			nodePool.Labels = appLabels
@@ -385,6 +395,7 @@ var _ = Describe("Expiration", func() {
 
 			env.EventuallyExpectCreatedNodeClaimCount("==", 5)
 			nodes := env.EventuallyExpectCreatedNodeCount("==", 5)
+
 			// Check that all daemonsets and deployment pods are online
 			env.EventuallyExpectHealthyPodCount(selector, numPods)
 
@@ -396,9 +407,6 @@ var _ = Describe("Expiration", func() {
 				env.ExpectUpdated(node)
 			}
 
-			// Check that all daemonsets and deployment pods are online
-			env.EventuallyExpectHealthyPodCount(selector, numPods)
-
 			By("enabling expiration")
 			nodePool.Spec.Disruption.ExpireAfter = corev1beta1.NillableDuration{Duration: lo.ToPtr(30 * time.Second)}
 			env.ExpectUpdated(nodePool)
@@ -409,9 +417,16 @@ var _ = Describe("Expiration", func() {
 			env.EventuallyExpectNodeCount("==", 8)
 			nodes = env.ConsistentlyExpectDisruptionsWithNodeCount(3, 8, 5*time.Second)
 
+			// Set the expireAfter to "Never" to make sure new node isn't deleted
+			// This is CRITICAL since it prevents nodes that are immediately spun up from immediately being expired and
+			// racing at the end of the E2E test, leaking node resources into subsequent tests
+			nodePool.Spec.Disruption.ExpireAfter.Duration = nil
+			env.ExpectUpdated(nodePool)
+
 			for _, node := range nodes {
 				Expect(env.ExpectTestingFinalizerRemoved(node)).To(Succeed())
 			}
+
 			env.EventuallyExpectNotFound(nodes[0], nodes[1], nodes[2])
 			env.ExpectNodeCount("==", 5)
 		})
@@ -645,7 +660,7 @@ var _ = Describe("Expiration", func() {
 					g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(node), node)).To(Succeed())
 					stored := node.DeepCopy()
 					node.Spec.Taints = lo.Reject(node.Spec.Taints, func(t v1.Taint, _ int) bool { return t.Key == "example.com/taint" })
-					g.Expect(env.Client.Patch(env.Context, node, client.MergeFrom(stored))).To(Succeed())
+					g.Expect(env.Client.Patch(env.Context, node, client.StrategicMergeFrom(stored))).To(Succeed())
 				}
 			}).Should(Succeed())
 

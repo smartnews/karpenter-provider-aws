@@ -45,6 +45,9 @@ Node system daemon overhead are the resources reserved for system overhead, the 
 ### `karpenter_nodes_leases_deleted`
 Number of deleted leaked leases.
 
+### `karpenter_nodes_eviction_queue_depth`
+The number of pods currently waiting for a successful eviction in the eviction queue.
+
 ### `karpenter_nodes_created`
 Number of nodes created in total by Karpenter. Labeled by owning nodepool.
 
@@ -63,6 +66,9 @@ The time from pod creation until the pod is running.
 
 ### `karpenter_provisioner_scheduling_simulation_duration_seconds`
 Duration of scheduling simulations used for deprovisioning and provisioning in seconds.
+
+### `karpenter_provisioner_scheduling_queue_depth`
+The number of pods currently waiting to be scheduled.
 
 ### `karpenter_provisioner_scheduling_duration_seconds`
 Duration of scheduling process in seconds.
@@ -115,27 +121,47 @@ The number of times that Karpenter failed to launch a replacement node for disru
 ### `karpenter_disruption_queue_depth`
 The number of commands currently being waited on in the disruption orchestration queue.
 
+### `karpenter_disruption_pods_disrupted_total`
+Total number of reschedulable pods disrupted on nodes. Labeled by NodePool, disruption action, method, and consolidation type.
+
+### `karpenter_disruption_nodes_disrupted_total`
+Total number of nodes disrupted. Labeled by NodePool, disruption action, method, and consolidation type.
+
 ### `karpenter_disruption_evaluation_duration_seconds`
-Duration of the disruption evaluation process in seconds.
+Duration of the disruption evaluation process in seconds. Labeled by method and consolidation type.
 
 ### `karpenter_disruption_eligible_nodes`
-Number of nodes eligible for disruption by Karpenter. Labeled by disruption method.
+Number of nodes eligible for disruption by Karpenter. Labeled by disruption method and consolidation type.
 
 ### `karpenter_disruption_consolidation_timeouts_total`
 Number of times the Consolidation algorithm has reached a timeout. Labeled by consolidation type.
 
+### `karpenter_disruption_budgets_allowed_disruptions`
+The number of nodes for a given NodePool that can be disrupted at a point in time. Labeled by NodePool. Note that allowed disruptions can change very rapidly, as new nodes may be created and others may be deleted at any point.
+
 ### `karpenter_disruption_actions_performed_total`
-Number of disruption actions performed. Labeled by disruption method.
+Number of disruption actions performed. Labeled by disruption action, method, and consolidation type.
 
 ## Consistency Metrics
 
 ### `karpenter_consistency_errors`
 Number of consistency checks that have failed.
 
+## Cluster State Metrics
+
+### `karpenter_cluster_state_synced`
+Returns 1 if cluster state is synced and 0 otherwise. Synced checks that nodeclaims and nodes that are stored in the APIServer have the same representation as Karpenter's cluster state
+
+### `karpenter_cluster_state_node_count`
+Current count of nodes in cluster state
+
 ## Cloudprovider Metrics
 
-### `karpenter_cloudprovider_instance_type_price_estimate`
-Estimated hourly price used when making informed decisions on node cost calculation. This is updated once on startup and then every 12 hours.
+### `karpenter_cloudprovider_instance_type_offering_price_estimate`
+Instance type offering estimated hourly price used when making informed decisions on node cost calculation, based on instance type, capacity type, and zone.
+
+### `karpenter_cloudprovider_instance_type_offering_available`
+Instance type offering availability, based on instance type, capacity type, and zone
 
 ### `karpenter_cloudprovider_instance_type_memory_bytes`
 Memory, in bytes, for a given instance type.

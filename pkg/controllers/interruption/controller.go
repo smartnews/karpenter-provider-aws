@@ -61,14 +61,14 @@ type Controller struct {
 	kubeClient                client.Client
 	clk                       clock.Clock
 	recorder                  events.Recorder
-	sqsProvider               *sqs.Provider
+	sqsProvider               sqs.Provider
 	unavailableOfferingsCache *cache.UnavailableOfferings
 	parser                    *EventParser
 	cm                        *pretty.ChangeMonitor
 }
 
 func NewController(kubeClient client.Client, clk clock.Clock, recorder events.Recorder,
-	sqsProvider *sqs.Provider, unavailableOfferingsCache *cache.UnavailableOfferings) *Controller {
+	sqsProvider sqs.Provider, unavailableOfferingsCache *cache.UnavailableOfferings) *Controller {
 
 	return &Controller{
 		kubeClient:                kubeClient,
@@ -234,8 +234,9 @@ func (c *Controller) deleteNodeClaim(ctx context.Context, nodeClaim *v1beta1.Nod
 	logging.FromContext(ctx).Infof("initiating delete from interruption message")
 	c.recorder.Publish(interruptionevents.TerminatingOnInterruption(node, nodeClaim)...)
 	metrics.NodeClaimsTerminatedCounter.With(prometheus.Labels{
-		metrics.ReasonLabel:   terminationReasonLabel,
-		metrics.NodePoolLabel: nodeClaim.Labels[v1beta1.NodePoolLabelKey],
+		metrics.ReasonLabel:       terminationReasonLabel,
+		metrics.NodePoolLabel:     nodeClaim.Labels[v1beta1.NodePoolLabelKey],
+		metrics.CapacityTypeLabel: nodeClaim.Labels[v1beta1.CapacityTypeLabelKey],
 	}).Inc()
 	return nil
 }

@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/mitchellh/hashstructure/v2"
 	"github.com/patrickmn/go-cache"
@@ -43,19 +42,26 @@ import (
 
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/utils/pretty"
+
+	"github.com/aws/karpenter-provider-aws/pkg/providers/amifamily"
 )
 
 const (
 	InstanceTypesCacheKey         = "types"
 	InstanceTypeOfferingsCacheKey = "offerings"
-	ZonesCacheKey                 = "zones"
 )
 
-type Provider struct {
+type Provider interface {
+	LivenessProbe(*http.Request) error
+
+	List(context.Context, *corev1beta1.KubeletConfiguration, *v1beta1.EC2NodeClass) ([]*cloudprovider.InstanceType, error)
+}
+
+type DefaultProvider struct {
 	region          string
 	ec2api          ec2iface.EC2API
-	subnetProvider  *subnet.Provider
-	pricingProvider *pricing.Provider
+	subnetProvider  subnet.Provider
+	pricingProvider pricing.Provider
 	// Has one cache entry for all the instance types (key: InstanceTypesCacheKey)
 	// Has one cache entry for all the zones for each subnet selector (key: InstanceTypesZonesCacheKeyPrefix:<hash_of_selector>)
 	// Values cached *before* considering insufficient capacity errors from the unavailableOfferings cache.
@@ -73,9 +79,9 @@ type Provider struct {
 	instanceTypeOfferingsSeqNum uint64
 }
 
-func NewProvider(region string, cache *cache.Cache, ec2api ec2iface.EC2API, subnetProvider *subnet.Provider,
-	unavailableOfferingsCache *awscache.UnavailableOfferings, pricingProvider *pricing.Provider) *Provider {
-	return &Provider{
+func NewDefaultProvider(region string, cache *cache.Cache, ec2api ec2iface.EC2API, subnetProvider subnet.Provider,
+	unavailableOfferingsCache *awscache.UnavailableOfferings, pricingProvider pricing.Provider) *DefaultProvider {
+	return &DefaultProvider{
 		ec2api:               ec2api,
 		region:               region,
 		subnetProvider:       subnetProvider,
@@ -87,7 +93,7 @@ func NewProvider(region string, cache *cache.Cache, ec2api ec2iface.EC2API, subn
 	}
 }
 
-func (p *Provider) List(ctx context.Context, kc *corev1beta1.KubeletConfiguration, nodeClass *v1beta1.EC2NodeClass) ([]*cloudprovider.InstanceType, error) {
+func (p *DefaultProvider) List(ctx context.Context, kc *corev1beta1.KubeletConfiguration, nodeClass *v1beta1.EC2NodeClass) ([]*cloudprovider.InstanceType, error) {
 	// Get InstanceTypes from EC2
 	instanceTypes, err := p.GetInstanceTypes(ctx)
 	if err != nil {
@@ -98,9 +104,6 @@ func (p *Provider) List(ctx context.Context, kc *corev1beta1.KubeletConfiguratio
 	if err != nil {
 		return nil, err
 	}
-	// Get zones from instancetypeOfferings
-	zones := p.getZones(ctx, instanceTypeOfferings)
-	// Constrain zones from subnets
 	subnets, err := p.subnetProvider.List(ctx, nodeClass)
 	if err != nil {
 		return nil, err
@@ -109,37 +112,72 @@ func (p *Provider) List(ctx context.Context, kc *corev1beta1.KubeletConfiguratio
 		return aws.StringValue(s.AvailabilityZone)
 	})...)
 
+	if kc == nil {
+		kc = &corev1beta1.KubeletConfiguration{}
+	}
+	if nodeClass == nil {
+		nodeClass = &v1beta1.EC2NodeClass{}
+	}
+
 	// Compute fully initialized instance types hash key
-	subnetHash, _ := hashstructure.Hash(subnets, hashstructure.FormatV2, &hashstructure.HashOptions{SlicesAsSets: true})
+	subnetZonesHash, _ := hashstructure.Hash(subnetZones, hashstructure.FormatV2, &hashstructure.HashOptions{SlicesAsSets: true})
 	kcHash, _ := hashstructure.Hash(kc, hashstructure.FormatV2, &hashstructure.HashOptions{SlicesAsSets: true})
 	blockDeviceMappingsHash, _ := hashstructure.Hash(nodeClass.Spec.BlockDeviceMappings, hashstructure.FormatV2, &hashstructure.HashOptions{SlicesAsSets: true})
-	key := fmt.Sprintf("%d-%d-%d-%016x-%016x-%016x-%s", p.instanceTypesSeqNum, p.instanceTypeOfferingsSeqNum, p.unavailableOfferings.SeqNum, subnetHash, kcHash, blockDeviceMappingsHash, aws.StringValue(nodeClass.Spec.AMIFamily))
+	key := fmt.Sprintf("%d-%d-%d-%016x-%016x-%016x-%s-%s",
+		p.instanceTypesSeqNum,
+		p.instanceTypeOfferingsSeqNum,
+		p.unavailableOfferings.SeqNum,
+		subnetZonesHash,
+		kcHash,
+		blockDeviceMappingsHash,
+		aws.StringValue((*string)(nodeClass.Spec.InstanceStorePolicy)),
+		aws.StringValue(nodeClass.Spec.AMIFamily),
+	)
 	if item, ok := p.cache.Get(key); ok {
 		return item.([]*cloudprovider.InstanceType), nil
 	}
-	result := lo.Map(instanceTypes, func(i *ec2.InstanceTypeInfo, _ int) *cloudprovider.InstanceType {
-		return NewInstanceType(ctx, i, kc, p.region, nodeClass, p.createOfferings(ctx, i, instanceTypeOfferings[aws.StringValue(i.InstanceType)], zones, subnetZones))
-	})
-	for _, instanceType := range instanceTypes {
-		InstanceTypeVCPU.With(prometheus.Labels{
-			InstanceTypeLabel: *instanceType.InstanceType,
-		}).Set(float64(aws.Int64Value(instanceType.VCpuInfo.DefaultVCpus)))
-		InstanceTypeMemory.With(prometheus.Labels{
-			InstanceTypeLabel: *instanceType.InstanceType,
-		}).Set(float64(aws.Int64Value(instanceType.MemoryInfo.SizeInMiB) * 1024 * 1024))
+
+	// Get all zones across all offerings
+	// We don't use this in the cache key since this is produced from our instanceTypeOfferings which we do cache
+	allZones := sets.New[string]()
+	for _, offeringZones := range instanceTypeOfferings {
+		for zone := range offeringZones {
+			allZones.Insert(zone)
+		}
 	}
+	if p.cm.HasChanged("zones", allZones) {
+		logging.FromContext(ctx).With("zones", allZones.UnsortedList()).Debugf("discovered zones")
+	}
+	amiFamily := amifamily.GetAMIFamily(nodeClass.Spec.AMIFamily, &amifamily.Options{})
+	result := lo.Map(instanceTypes, func(i *ec2.InstanceTypeInfo, _ int) *cloudprovider.InstanceType {
+		instanceTypeVCPU.With(prometheus.Labels{
+			instanceTypeLabel: *i.InstanceType,
+		}).Set(float64(aws.Int64Value(i.VCpuInfo.DefaultVCpus)))
+		instanceTypeMemory.With(prometheus.Labels{
+			instanceTypeLabel: *i.InstanceType,
+		}).Set(float64(aws.Int64Value(i.MemoryInfo.SizeInMiB) * 1024 * 1024))
+
+		// !!! Important !!!
+		// Any changes to the values passed into the NewInstanceType method will require making updates to the cache key
+		// so that Karpenter is able to cache the set of InstanceTypes based on values that alter the set of instance types
+		// !!! Important !!!
+		return NewInstanceType(ctx, i, p.region,
+			nodeClass.Spec.BlockDeviceMappings, nodeClass.Spec.InstanceStorePolicy,
+			kc.MaxPods, kc.PodsPerCore, kc.KubeReserved, kc.SystemReserved, kc.EvictionHard, kc.EvictionSoft,
+			amiFamily, p.createOfferings(ctx, i, instanceTypeOfferings[aws.StringValue(i.InstanceType)], allZones, subnetZones))
+	})
 	p.cache.SetDefault(key, result)
 	return result, nil
 }
 
-func (p *Provider) LivenessProbe(req *http.Request) error {
+func (p *DefaultProvider) LivenessProbe(req *http.Request) error {
 	if err := p.subnetProvider.LivenessProbe(req); err != nil {
 		return err
 	}
 	return p.pricingProvider.LivenessProbe(req)
 }
 
-func (p *Provider) createOfferings(ctx context.Context, instanceType *ec2.InstanceTypeInfo, instanceTypeZones, zones, subnetZones sets.Set[string]) []cloudprovider.Offering {
+func (p *DefaultProvider) createOfferings(ctx context.Context, instanceType *ec2.InstanceTypeInfo, instanceTypeZones, zones, subnetZones sets.Set[string]) []cloudprovider.Offering {
 	var offerings []cloudprovider.Offering
 	for zone := range zones {
 		// while usage classes should be a distinct set, there's no guarantee of that
@@ -167,36 +205,22 @@ func (p *Provider) createOfferings(ctx context.Context, instanceType *ec2.Instan
 				Price:        price,
 				Available:    available,
 			})
+			instanceTypeOfferingAvailable.With(prometheus.Labels{
+				instanceTypeLabel: *instanceType.InstanceType,
+				capacityTypeLabel: capacityType,
+				zoneLabel:         zone,
+			}).Set(float64(lo.Ternary(available, 1, 0)))
+			instanceTypeOfferingPriceEstimate.With(prometheus.Labels{
+				instanceTypeLabel: *instanceType.InstanceType,
+				capacityTypeLabel: capacityType,
+				zoneLabel:         zone,
+			}).Set(price)
 		}
 	}
 	return offerings
 }
 
-func (p *Provider) getZones(ctx context.Context, instanceTypeOfferings map[string]sets.Set[string]) sets.Set[string] {
-	// DO NOT REMOVE THIS LOCK ----------------------------------------------------------------------------
-	// We lock here so that multiple callers to getAvailabilityZones do not result in cache misses and multiple
-	// calls to EC2 when we could have just made one call.
-	// TODO @joinnis: This can be made more efficient by holding a Read lock and only obtaining the Write if not in cache
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if cached, ok := p.cache.Get(ZonesCacheKey); ok {
-		return cached.(sets.Set[string])
-	}
-	// Get zones from offerings
-	zones := sets.Set[string]{}
-	for _, offeringZones := range instanceTypeOfferings {
-		for zone := range offeringZones {
-			zones.Insert(zone)
-		}
-	}
-	if p.cm.HasChanged("zones", zones) {
-		logging.FromContext(ctx).With("zones", zones.UnsortedList()).Debugf("discovered zones")
-	}
-	p.cache.Set(ZonesCacheKey, zones, 24*time.Hour)
-	return zones
-}
-
-func (p *Provider) getInstanceTypeOfferings(ctx context.Context) (map[string]sets.Set[string], error) {
+func (p *DefaultProvider) getInstanceTypeOfferings(ctx context.Context) (map[string]sets.Set[string], error) {
 	// DO NOT REMOVE THIS LOCK ----------------------------------------------------------------------------
 	// We lock here so that multiple callers to getInstanceTypeOfferings do not result in cache misses and multiple
 	// calls to EC2 when we could have just made one call.
@@ -232,7 +256,7 @@ func (p *Provider) getInstanceTypeOfferings(ctx context.Context) (map[string]set
 }
 
 // GetInstanceTypes retrieves all instance types from the ec2 DescribeInstanceTypes API using some opinionated filters
-func (p *Provider) GetInstanceTypes(ctx context.Context) ([]*ec2.InstanceTypeInfo, error) {
+func (p *DefaultProvider) GetInstanceTypes(ctx context.Context) ([]*ec2.InstanceTypeInfo, error) {
 	// DO NOT REMOVE THIS LOCK ----------------------------------------------------------------------------
 	// We lock here so that multiple callers to GetInstanceTypes do not result in cache misses and multiple
 	// calls to EC2 when we could have just made one call. This lock is here because multiple callers to EC2 result

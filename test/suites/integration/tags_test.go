@@ -15,6 +15,7 @@ limitations under the License.
 package integration_test
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -65,11 +66,12 @@ var _ = Describe("Tags", func() {
 			}
 		})
 		It("should tag spot instance requests when creating resources", func() {
-			coretest.ReplaceRequirements(nodePool, v1.NodeSelectorRequirement{
-				Key:      corev1beta1.CapacityTypeLabelKey,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{corev1beta1.CapacityTypeSpot},
-			})
+			coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{corev1beta1.CapacityTypeSpot},
+				}})
 			nodeClass.Spec.Tags = map[string]string{"TestTag": "TestVal"}
 			pod := coretest.Pod()
 
@@ -107,6 +109,10 @@ var _ = Describe("Tags", func() {
 			nodeClass = test.EC2NodeClass(*nodeClass, v1beta1.EC2NodeClass{Spec: v1beta1.EC2NodeClassSpec{
 				Tags: map[string]string{"Name": "custom-name", "testing/cluster": env.ClusterName},
 			}})
+			if env.PrivateCluster {
+				nodeClass.Spec.Role = ""
+				nodeClass.Spec.InstanceProfile = lo.ToPtr(fmt.Sprintf("KarpenterNodeInstanceProfile-%s", env.ClusterName))
+			}
 			nodePool = coretest.NodePool(*nodePool, corev1beta1.NodePool{
 				Spec: corev1beta1.NodePoolSpec{
 					Template: corev1beta1.NodeClaimTemplate{

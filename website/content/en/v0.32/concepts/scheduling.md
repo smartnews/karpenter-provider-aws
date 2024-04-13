@@ -213,7 +213,7 @@ All examples below assume that the NodePool doesn't have constraints to prevent 
          - matchExpressions:
            - key: "topology.kubernetes.io/zone"
              operator: "In"
-             values: ["us-west-2a, us-west-2b"]
+             values: ["us-west-2a", "us-west-2b"]
            - key: "topology.kubernetes.io/zone"
              operator: "In"
              values: ["us-west-2b"]
@@ -224,7 +224,7 @@ Changing the second operator to `NotIn` would allow the pod to run in `us-west-2
 ```yaml
            - key: "topology.kubernetes.io/zone"
              operator: "In"
-             values: ["us-west-2a, us-west-2b"]
+             values: ["us-west-2a", "us-west-2b"]
            - key: "topology.kubernetes.io/zone"
              operator: "NotIn"
              values: ["us-west-2b"]
@@ -242,7 +242,7 @@ Here, if `us-west-2a` is not available, the second term will cause the pod to ru
          - matchExpressions: # OR
            - key: "topology.kubernetes.io/zone" # AND
              operator: "In"
-             values: ["us-west-2a, us-west-2b"]
+             values: ["us-west-2a", "us-west-2b"]
            - key: "topology.kubernetes.io/zone" # AND
              operator: "NotIn"
              values: ["us-west-2b"]
@@ -531,6 +531,94 @@ Based on the way that Karpenter performs pod batching and bin packing, it is not
 {{% /alert %}}
 
 ## Advanced Scheduling Techniques
+
+### Scheduling based on Node Resources
+
+You may want pods to be able to request resources of nodes that Kubernetes natively does not provide as a schedulable resource or that are aspects of certain nodes like
+High Performance Networking or NVME Local Storage. You can use Karpenter's Well-Known Labels to accomplish this.
+
+These can further be applied at the NodePool or Workload level using Requirements, NodeSelectors or Affinities
+
+Pod example of requiring any NVME disk:
+```yaml
+...
+ affinity:
+   nodeAffinity:
+     requiredDuringSchedulingIgnoredDuringExecution:
+       nodeSelectorTerms:
+         - matchExpressions:
+           - key: "karpenter.k8s.aws/instance-local-nvme"
+             operator: "Exists"
+...
+```
+
+NodePool Example:
+```yaml
+...
+requirement:
+  - key: "karpenter.k8s.aws/instance-local-nvme"
+    operator: "Exists"
+...
+```
+
+Pod example of requiring at least 100GB of NVME disk:
+```yaml
+...
+ affinity:
+   nodeAffinity:
+     requiredDuringSchedulingIgnoredDuringExecution:
+       nodeSelectorTerms:
+         - matchExpressions:
+            - key: "karpenter.k8s.aws/instance-local-nvme"
+              operator: Gt
+              values: ["99"]
+...
+```
+
+NodePool Example:
+```yaml
+...
+requirement:
+  - key: "karpenter.k8s.aws/instance-local-nvme"
+    operator: Gt
+    values: ["99"]
+...
+```
+
+{{% alert title="Note" color="primary" %}}
+Karpenter cannot yet take into account ephemeral-storage requests while scheduling pods, we're purely requesting attributes of nodes and getting X amount of resources
+as a side effect. You may need to tweak schedulable resources like CPU or Memory to achieve desired fit, especially if Consolidation is enabled.
+
+Your NodeClass will also need to support automatically formatting and mounting NVME Instance Storage if available.
+{{% /alert %}}
+
+Pod example of requiring at least 50 Gbps of network bandwidth:
+```yaml
+...
+ affinity:
+   nodeAffinity:
+     requiredDuringSchedulingIgnoredDuringExecution:
+       nodeSelectorTerms:
+         - matchExpressions:
+            - key: "karpenter.k8s.aws/instance-network-bandwidth"
+              operator: Gt
+              values: ["49999"]
+...
+```
+
+NodePool Example:
+```yaml
+...
+requirement:
+  - key: "karpenter.k8s.aws/instance-network-bandwidth"
+    operator: Gt
+    values: ["49999"]
+...
+```
+
+{{% alert title="Note" color="primary" %}}
+If using Gt/Lt operators, make sure to use values under the actual label values of the desired resource.
+{{% /alert %}}
 
 ### `Exists` Operator
 

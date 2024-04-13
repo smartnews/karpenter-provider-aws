@@ -74,10 +74,12 @@ var _ = Describe("Chaos", func() {
 			ctx, cancel := context.WithCancel(env.Context)
 			defer cancel()
 
-			nodePool = coretest.ReplaceRequirements(nodePool, v1.NodeSelectorRequirement{
-				Key:      corev1beta1.CapacityTypeLabelKey,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{corev1beta1.CapacityTypeSpot},
+			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: v1.NodeSelectorRequirement{
+					Key:      corev1beta1.CapacityTypeLabelKey,
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{corev1beta1.CapacityTypeSpot},
+				},
 			})
 			nodePool.Spec.Disruption.ConsolidationPolicy = corev1beta1.ConsolidationPolicyWhenUnderutilized
 			nodePool.Spec.Disruption.ConsolidateAfter = nil
@@ -148,7 +150,7 @@ func (t *taintAdder) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := t.kubeClient.Get(ctx, req.NamespacedName, node); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	mergeFrom := client.MergeFrom(node.DeepCopy())
+	mergeFrom := client.StrategicMergeFrom(node.DeepCopy())
 	taint := v1.Taint{
 		Key:    "test",
 		Value:  "true",

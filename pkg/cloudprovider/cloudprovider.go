@@ -54,17 +54,18 @@ import (
 var _ cloudprovider.CloudProvider = (*CloudProvider)(nil)
 
 type CloudProvider struct {
-	instanceTypeProvider  *instancetype.Provider
-	instanceProvider      *instance.Provider
-	kubeClient            client.Client
-	amiProvider           *amifamily.Provider
-	securityGroupProvider *securitygroup.Provider
-	subnetProvider        *subnet.Provider
-	recorder              events.Recorder
+	kubeClient client.Client
+	recorder   events.Recorder
+
+	instanceTypeProvider  instancetype.Provider
+	instanceProvider      instance.Provider
+	amiProvider           amifamily.Provider
+	securityGroupProvider securitygroup.Provider
+	subnetProvider        subnet.Provider
 }
 
-func New(instanceTypeProvider *instancetype.Provider, instanceProvider *instance.Provider, recorder events.Recorder,
-	kubeClient client.Client, amiProvider *amifamily.Provider, securityGroupProvider *securitygroup.Provider, subnetProvider *subnet.Provider) *CloudProvider {
+func New(instanceTypeProvider instancetype.Provider, instanceProvider instance.Provider, recorder events.Recorder,
+	kubeClient client.Client, amiProvider amifamily.Provider, securityGroupProvider securitygroup.Provider, subnetProvider subnet.Provider) *CloudProvider {
 	return &CloudProvider{
 		instanceTypeProvider:  instanceTypeProvider,
 		instanceProvider:      instanceProvider,
@@ -101,7 +102,10 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *corev1beta1.NodeC
 		return i.Name == instance.Type
 	})
 	nc := c.instanceToNodeClaim(instance, instanceType)
-	nc.Annotations = lo.Assign(nc.Annotations, map[string]string{v1beta1.AnnotationEC2NodeClassHash: nodeClass.Hash()})
+	nc.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{
+		v1beta1.AnnotationEC2NodeClassHash:        nodeClass.Hash(),
+		v1beta1.AnnotationEC2NodeClassHashVersion: v1beta1.EC2NodeClassHashVersion,
+	})
 	return nc, nil
 }
 
@@ -208,6 +212,16 @@ func (c *CloudProvider) Name() string {
 	return "aws"
 }
 
+func (c *CloudProvider) GetSupportedNodeClasses() []schema.GroupVersionKind {
+	return []schema.GroupVersionKind{
+		{
+			Group:   v1beta1.SchemeGroupVersion.Group,
+			Version: v1beta1.SchemeGroupVersion.Version,
+			Kind:    "EC2NodeClass",
+		},
+	}
+}
+
 func (c *CloudProvider) resolveNodeClassFromNodeClaim(ctx context.Context, nodeClaim *corev1beta1.NodeClaim) (*v1beta1.EC2NodeClass, error) {
 	nodeClass := &v1beta1.EC2NodeClass{}
 	if err := c.kubeClient.Get(ctx, types.NamespacedName{Name: nodeClaim.Spec.NodeClassRef.Name}, nodeClass); err != nil {
@@ -215,7 +229,9 @@ func (c *CloudProvider) resolveNodeClassFromNodeClaim(ctx context.Context, nodeC
 	}
 	// For the purposes of NodeClass CloudProvider resolution, we treat deleting NodeClasses as NotFound
 	if !nodeClass.DeletionTimestamp.IsZero() {
-		return nil, errors.NewNotFound(v1beta1.SchemeGroupVersion.WithResource("ec2nodeclasses").GroupResource(), nodeClass.Name)
+		// For the purposes of NodeClass CloudProvider resolution, we treat deleting NodeClasses as NotFound,
+		// but we return a different error message to be clearer to users
+		return nil, newTerminatingNodeClassError(nodeClass.Name)
 	}
 	return nodeClass, nil
 }
@@ -225,9 +241,10 @@ func (c *CloudProvider) resolveNodeClassFromNodePool(ctx context.Context, nodePo
 	if err := c.kubeClient.Get(ctx, types.NamespacedName{Name: nodePool.Spec.Template.Spec.NodeClassRef.Name}, nodeClass); err != nil {
 		return nil, err
 	}
-	// For the purposes of NodeClass CloudProvider resolution, we treat deleting NodeClasses as NotFound
 	if !nodeClass.DeletionTimestamp.IsZero() {
-		return nil, errors.NewNotFound(v1beta1.SchemeGroupVersion.WithResource("ec2nodeclasses").GroupResource(), nodeClass.Name)
+		// For the purposes of NodeClass CloudProvider resolution, we treat deleting NodeClasses as NotFound,
+		// but we return a different error message to be clearer to users
+		return nil, newTerminatingNodeClassError(nodeClass.Name)
 	}
 	return nodeClass, nil
 }
@@ -237,7 +254,7 @@ func (c *CloudProvider) resolveInstanceTypes(ctx context.Context, nodeClaim *cor
 	if err != nil {
 		return nil, fmt.Errorf("getting instance types, %w", err)
 	}
-	reqs := scheduling.NewNodeSelectorRequirements(nodeClaim.Spec.Requirements...)
+	reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nodeClaim.Spec.Requirements...)
 	return lo.Filter(instanceTypes, func(i *cloudprovider.InstanceType, _ int) bool {
 		return reqs.Compatible(i.Requirements, scheduling.AllowUndefinedWellKnownLabels) == nil &&
 			len(i.Offerings.Compatible(reqs).Available()) > 0 &&
@@ -270,7 +287,7 @@ func (c *CloudProvider) resolveNodePoolFromInstance(ctx context.Context, instanc
 		}
 		return nodePool, nil
 	}
-	return nil, errors.NewNotFound(schema.GroupResource{Group: corev1beta1.Group, Resource: "NodePool"}, "")
+	return nil, errors.NewNotFound(schema.GroupResource{Group: corev1beta1.Group, Resource: "nodepools"}, "")
 }
 
 func (c *CloudProvider) instanceToNodeClaim(i *instance.Instance, instanceType *cloudprovider.InstanceType) *corev1beta1.NodeClaim {
@@ -316,4 +333,12 @@ func (c *CloudProvider) instanceToNodeClaim(i *instance.Instance, instanceType *
 	nodeClaim.Status.ProviderID = fmt.Sprintf("aws:///%s/%s", i.Zone, i.ID)
 	nodeClaim.Status.ImageID = i.ImageID
 	return nodeClaim
+}
+
+// newTerminatingNodeClassError returns a NotFound error for handling by
+func newTerminatingNodeClassError(name string) *errors.StatusError {
+	qualifiedResource := schema.GroupResource{Group: corev1beta1.Group, Resource: "ec2nodeclasses"}
+	err := errors.NewNotFound(qualifiedResource, name)
+	err.ErrStatus.Message = fmt.Sprintf("%s %q is terminating, treating as not found", qualifiedResource.String(), name)
+	return err
 }

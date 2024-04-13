@@ -52,6 +52,7 @@ func init() {
 type Environment struct {
 	// API
 	EC2API     *fake.EC2API
+	EKSAPI     *fake.EKSAPI
 	SSMAPI     *fake.SSMAPI
 	IAMAPI     *fake.IAMAPI
 	PricingAPI *fake.PricingAPI
@@ -67,21 +68,22 @@ type Environment struct {
 	InstanceProfileCache      *cache.Cache
 
 	// Providers
-	InstanceTypesProvider   *instancetype.Provider
-	InstanceProvider        *instance.Provider
-	SubnetProvider          *subnet.Provider
-	SecurityGroupProvider   *securitygroup.Provider
-	InstanceProfileProvider *instanceprofile.Provider
-	PricingProvider         *pricing.Provider
-	AMIProvider             *amifamily.Provider
+	InstanceTypesProvider   *instancetype.DefaultProvider
+	InstanceProvider        *instance.DefaultProvider
+	SubnetProvider          *subnet.DefaultProvider
+	SecurityGroupProvider   *securitygroup.DefaultProvider
+	InstanceProfileProvider *instanceprofile.DefaultProvider
+	PricingProvider         *pricing.DefaultProvider
+	AMIProvider             *amifamily.DefaultProvider
 	AMIResolver             *amifamily.Resolver
-	VersionProvider         *version.Provider
-	LaunchTemplateProvider  *launchtemplate.Provider
+	VersionProvider         *version.DefaultProvider
+	LaunchTemplateProvider  *launchtemplate.DefaultProvider
 }
 
 func NewEnvironment(ctx context.Context, env *coretest.Environment) *Environment {
 	// API
 	ec2api := fake.NewEC2API()
+	eksapi := fake.NewEKSAPI()
 	ssmapi := fake.NewSSMAPI()
 	iamapi := fake.NewIAMAPI()
 
@@ -97,19 +99,20 @@ func NewEnvironment(ctx context.Context, env *coretest.Environment) *Environment
 	fakePricingAPI := &fake.PricingAPI{}
 
 	// Providers
-	pricingProvider := pricing.NewProvider(ctx, fakePricingAPI, ec2api, fake.DefaultRegion)
-	subnetProvider := subnet.NewProvider(ec2api, subnetCache)
-	securityGroupProvider := securitygroup.NewProvider(ec2api, securityGroupCache)
-	versionProvider := version.NewProvider(env.KubernetesInterface, kubernetesVersionCache)
+	pricingProvider := pricing.NewDefaultProvider(ctx, fakePricingAPI, ec2api, fake.DefaultRegion)
+	subnetProvider := subnet.NewDefaultProvider(ec2api, subnetCache)
+	securityGroupProvider := securitygroup.NewDefaultProvider(ec2api, securityGroupCache)
+	versionProvider := version.NewDefaultProvider(env.KubernetesInterface, kubernetesVersionCache)
 	instanceProfileProvider := instanceprofile.NewProvider(fake.DefaultRegion, iamapi, instanceProfileCache)
-	amiProvider := amifamily.NewProvider(versionProvider, ssmapi, ec2api, ec2Cache)
-	amiResolver := amifamily.New(amiProvider)
-	instanceTypesProvider := instancetype.NewProvider(fake.DefaultRegion, instanceTypeCache, ec2api, subnetProvider, unavailableOfferingsCache, pricingProvider)
+	amiProvider := amifamily.NewDefaultProvider(versionProvider, ssmapi, ec2api, ec2Cache)
+	amiResolver := amifamily.NewResolver(amiProvider)
+	instanceTypesProvider := instancetype.NewDefaultProvider(fake.DefaultRegion, instanceTypeCache, ec2api, subnetProvider, unavailableOfferingsCache, pricingProvider)
 	launchTemplateProvider :=
-		launchtemplate.NewProvider(
+		launchtemplate.NewDefaultProvider(
 			ctx,
 			launchTemplateCache,
 			ec2api,
+			eksapi,
 			amiResolver,
 			securityGroupProvider,
 			subnetProvider,
@@ -120,7 +123,7 @@ func NewEnvironment(ctx context.Context, env *coretest.Environment) *Environment
 			"https://test-cluster",
 		)
 	instanceProvider :=
-		instance.NewProvider(ctx,
+		instance.NewDefaultProvider(ctx,
 			"",
 			ec2api,
 			unavailableOfferingsCache,
@@ -131,6 +134,7 @@ func NewEnvironment(ctx context.Context, env *coretest.Environment) *Environment
 
 	return &Environment{
 		EC2API:     ec2api,
+		EKSAPI:     eksapi,
 		SSMAPI:     ssmapi,
 		IAMAPI:     iamapi,
 		PricingAPI: fakePricingAPI,
@@ -159,6 +163,7 @@ func NewEnvironment(ctx context.Context, env *coretest.Environment) *Environment
 
 func (env *Environment) Reset() {
 	env.EC2API.Reset()
+	env.EKSAPI.Reset()
 	env.SSMAPI.Reset()
 	env.IAMAPI.Reset()
 	env.PricingAPI.Reset()
