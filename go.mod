@@ -115,3 +115,5 @@ require (
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
+
+replace sigs.k8s.io/karpenter v0.33.1-0.20240202175636-0e77b7842c28 => github.com/smartnews/karpenter v0.34.0-sn-1
