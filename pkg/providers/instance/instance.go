@@ -257,7 +257,7 @@ func getTags(ctx context.Context, nodeClass *v1beta1.EC2NodeClass, nodeClaim *co
 		corev1beta1.NodePoolLabelKey:       nodeClaim.Labels[corev1beta1.NodePoolLabelKey],
 		corev1beta1.ManagedByAnnotationKey: options.FromContext(ctx).ClusterName,
 		v1beta1.LabelNodeClass:             nodeClass.Name,
-		"Componenet":                       nodeClaim.Labels[corev1beta1.NodePoolLabelKey], // used for aws explore
+		"Component":                        nodeClaim.Labels[corev1beta1.NodePoolLabelKey], // used for aws explore
 	}
 	return lo.Assign(nodeClass.Spec.Tags, staticTags)
 }
