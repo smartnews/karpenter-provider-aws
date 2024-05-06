@@ -26,6 +26,8 @@ const (
 	messageTypeLabel       = "message_type"
 	actionTypeLabel        = "action_type"
 	terminationReasonLabel = "interruption"
+	instanceTypeLabel      = "instance_type"
+	zoneLabel              = "zone"
 )
 
 var (
@@ -63,6 +65,15 @@ var (
 			Help:      "Number of notification actions performed. Labeled by action",
 		},
 		[]string{actionTypeLabel},
+	)
+	spotTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: interruptionSubsystem,
+			Name:      "spot_total",
+			Help:      "Number of the spot interruption. Labeled by AZ, instance type",
+		},
+		[]string{instanceTypeLabel, zoneLabel},
 	)
 )
 
