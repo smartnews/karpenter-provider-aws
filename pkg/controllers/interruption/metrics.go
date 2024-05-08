@@ -78,5 +78,5 @@ var (
 )
 
 func init() {
-	crmetrics.Registry.MustRegister(receivedMessages, deletedMessages, messageLatency, actionsPerformed)
+	crmetrics.Registry.MustRegister(receivedMessages, deletedMessages, messageLatency, actionsPerformed, spotTotal)
 }
