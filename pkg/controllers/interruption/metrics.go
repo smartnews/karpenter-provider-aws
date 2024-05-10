@@ -28,6 +28,8 @@ const (
 	terminationReasonLabel = "interruption"
 	instanceTypeLabel      = "instance_type"
 	zoneLabel              = "zone"
+	hostLabel              = "node_name"
+	poolLabel              = "node_pool"
 )
 
 var (
@@ -73,7 +75,7 @@ var (
 			Name:      "spot_total",
 			Help:      "Number of the spot interruption. Labeled by AZ, instance type",
 		},
-		[]string{instanceTypeLabel, zoneLabel},
+		[]string{instanceTypeLabel, zoneLabel, hostLabel, poolLabel},
 	)
 )
 
