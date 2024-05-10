@@ -200,13 +200,13 @@ func (c *Controller) handleNodeClaim(ctx context.Context, msg messages.Message, 
 		}
 		spotTotal.WithLabelValues(instanceType, zone).Inc()
 		// try to create a new nodeclaim immediately but ignore error if it fails
-		if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
-			logging.FromContext(ctx).Errorf("[interruption handling]failed to create a new nodeclaim, %v", err)
-		} else {
-			logging.FromContext(ctx).Infof("Created new nodeclaim due to spot interruption")
-			// wait for the node provisioning before draining
-			time.Sleep(60 * time.Second)
-		}
+		//if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
+		//logging.FromContext(ctx).Errorf("[interruption handling]failed to create a new nodeclaim, %v", err)
+		//} else {
+		//logging.FromContext(ctx).Infof("Created new nodeclaim due to spot interruption")
+		//// wait for the node provisioning before draining
+		//time.Sleep(60 * time.Second)
+		//}
 	}
 	if action != NoAction {
 		return c.deleteNodeClaim(ctx, nodeClaim, node)
