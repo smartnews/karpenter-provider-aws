@@ -335,8 +335,8 @@ github.com/samber/lo v1.39.0/go.mod h1:+m/ZKRl6ClXCE2Lgf3MsQlWfh4bn1bz6CXEOxnEXn
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
 github.com/sirupsen/logrus v1.6.0/go.mod h1:7uNnSEd1DgxDLC74fIahvMZmmYsHGZGEOFrfsX/uA88=
-github.com/smartnews/karpenter v0.36.0-sn-test h1:dzNAEC04iK9H9caj27UeU7g3YS255YCw8tqvid0Q1So=
-github.com/smartnews/karpenter v0.36.0-sn-test/go.mod h1:fieFojxOec/l0tDmFT7R+g/Y+SGQbL9VlcYO8xb3sLo=
+github.com/smartnews/karpenter v0.36.0-fix-extra-node-2 h1:mtAyipQ1ZWVHUohQXtZ+Z0vXZQhZ5mZwCHAAXIzhyng=
+github.com/smartnews/karpenter v0.36.0-fix-extra-node-2/go.mod h1:fieFojxOec/l0tDmFT7R+g/Y+SGQbL9VlcYO8xb3sLo=
 github.com/spf13/cobra v1.8.0 h1:7aJaZx1B85qltLMc546zn58BxxfZdR/W22ej9CFoEf0=
 github.com/spf13/cobra v1.8.0/go.mod h1:WXLWApfZ71AjXPya3WOlMsY9yMs7YeiHhFVlvLyhcho=
 github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=
