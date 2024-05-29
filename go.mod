@@ -117,4 +117,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
 
-replace sigs.k8s.io/karpenter v0.36.0 => github.com/smartnews/karpenter v0.36.0-sn-2
+replace sigs.k8s.io/karpenter v0.37.0 => github.com/smartnews/karpenter v0.37.0-sn-1

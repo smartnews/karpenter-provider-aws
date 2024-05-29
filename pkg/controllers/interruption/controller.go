@@ -205,9 +205,9 @@ func (c *Controller) handleNodeClaim(ctx context.Context, msg messages.Message, 
 		spotTotal.WithLabelValues(instanceType, zone, nodeClaim.Status.NodeName, nodeClaim.Labels["karpenter.sh/nodepool"]).Inc()
 		// try to create a new nodeclaim immediately but ignore error if it fails
 		if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
-			logging.FromContext(ctx).Errorf("[interruption handling]failed to create a new nodeclaim, %v", err)
+			log.FromContext(ctx).Error(err, "[interruption handling]failed to create a new nodeclaim")
 		} else {
-			logging.FromContext(ctx).Infof("Created new nodeclaim due to spot interruption")
+			log.FromContext(ctx).Info("Created new nodeclaim due to spot interruption")
 			// wait for the node provisioning before draining
 			time.Sleep(60 * time.Second)
 		}
