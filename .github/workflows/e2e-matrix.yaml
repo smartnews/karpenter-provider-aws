@@ -7,7 +7,7 @@ on:
         default: "us-east-2"
       k8s_version:
         type: string
-        default: "1.29"
+        default: "1.30"
       cleanup:
         type: boolean
         required: true
@@ -41,7 +41,8 @@ on:
           - "1.27"
           - "1.28"
           - "1.29"
-        default: "1.29"
+          - "1.30"
+        default: "1.30"
       cleanup:
         type: boolean
         required: true
@@ -95,9 +96,7 @@ jobs:
       statuses: write # ./.github/actions/commit-status/start
     uses: ./.github/workflows/e2e-upgrade.yaml
     with:
-      # This version includes the IRSA changes to support k8s 1.23
-      # https://github.com/aws/karpenter-provider-aws/pull/5445
-      from_git_ref: 6934ef58e8e13686d4f57c2d336dd165cbf3e759
+      from_git_ref: b3076dca62a81caae2d3c4af4fd378c83a901c48
       to_git_ref: ${{ inputs.git_ref }}
       region: ${{ inputs.region }}
       k8s_version: ${{ inputs.k8s_version }}

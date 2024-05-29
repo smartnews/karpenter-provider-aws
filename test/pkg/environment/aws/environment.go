@@ -82,6 +82,13 @@ type Environment struct {
 	ClusterEndpoint   string
 	InterruptionQueue string
 	PrivateCluster    bool
+	ZoneInfo          []ZoneInfo
+}
+
+type ZoneInfo struct {
+	Zone     string
+	ZoneID   string
+	ZoneType string
 }
 
 func NewEnvironment(t *testing.T) *Environment {
@@ -119,8 +126,18 @@ func NewEnvironment(t *testing.T) *Environment {
 	}
 	// Initialize the provider only if the INTERRUPTION_QUEUE environment variable is defined
 	if v, ok := os.LookupEnv("INTERRUPTION_QUEUE"); ok {
-		awsEnv.SQSProvider = lo.Must(sqs.NewProvider(env.Context, servicesqs.New(session), v))
+		sqsapi := servicesqs.New(session)
+		out := lo.Must(sqsapi.GetQueueUrlWithContext(env.Context, &servicesqs.GetQueueUrlInput{QueueName: aws.String(v)}))
+		awsEnv.SQSProvider = lo.Must(sqs.NewDefaultProvider(sqsapi, lo.FromPtr(out.QueueUrl)))
 	}
+	// Populate ZoneInfo for all AZs in the region
+	awsEnv.ZoneInfo = lo.Map(lo.Must(awsEnv.EC2API.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{})).AvailabilityZones, func(zone *ec2.AvailabilityZone, _ int) ZoneInfo {
+		return ZoneInfo{
+			Zone:     lo.FromPtr(zone.ZoneName),
+			ZoneID:   lo.FromPtr(zone.ZoneId),
+			ZoneType: lo.FromPtr(zone.ZoneType),
+		}
+	})
 	return awsEnv
 }
 

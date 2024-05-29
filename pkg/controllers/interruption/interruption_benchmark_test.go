@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/avast/retry-go"
 	"github.com/aws/aws-sdk-go/aws"
 	awsclient "github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/aws/endpoints"
@@ -31,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	servicesqs "github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
+	"github.com/go-logr/zapr"
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
@@ -38,9 +40,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/workqueue"
 	clock "k8s.io/utils/clock/testing"
-	"knative.dev/pkg/logging"
 	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 
 	"sigs.k8s.io/karpenter/pkg/operator/scheme"
@@ -77,7 +79,7 @@ func BenchmarkNotification100(b *testing.B) {
 
 //nolint:gocyclo
 func benchmarkNotificationController(b *testing.B, messageCount int) {
-	ctx = logging.WithLogger(ctx, logging.FromContext(ctx).With("message-count", messageCount))
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("message-count", messageCount))
 	fakeClock = &clock.FakeClock{}
 	ctx = coreoptions.ToContext(ctx, coretest.Options())
 	ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
@@ -95,14 +97,15 @@ func benchmarkNotificationController(b *testing.B, messageCount int) {
 		}
 	}()
 
-	providers := newProviders(env.Context, env.Client)
-	if err := providers.makeInfrastructure(ctx); err != nil {
+	providers := newProviders(ctx, env.Client)
+	queueURL, err := providers.makeInfrastructure(ctx)
+	if err != nil {
 		b.Fatalf("standing up infrastructure, %v", err)
 	}
 	// Cleanup the infrastructure after the coretest completes
 	defer func() {
 		if err := retry.Do(func() error {
-			return providers.cleanupInfrastructure(ctx)
+			return providers.cleanupInfrastructure(queueURL)
 		}); err != nil {
 			b.Fatalf("deleting infrastructure, %v", err)
 		}
@@ -116,20 +119,20 @@ func benchmarkNotificationController(b *testing.B, messageCount int) {
 	interruptionController := interruption.NewController(env.Client, fakeClock, recorder, providers.sqsProvider, unavailableOfferingsCache)
 
 	messages, nodes := makeDiverseMessagesAndNodes(messageCount)
-	logging.FromContext(ctx).Infof("provisioning nodes")
+	log.FromContext(ctx).Info("provisioning nodes")
 	if err := provisionNodes(ctx, env.Client, nodes); err != nil {
 		b.Fatalf("provisioning nodes, %v", err)
 	}
-	logging.FromContext(ctx).Infof("completed provisioning nodes")
+	log.FromContext(ctx).Info("completed provisioning nodes")
 
-	logging.FromContext(ctx).Infof("provisioning messages into the SQS Queue")
+	log.FromContext(ctx).Info("provisioning messages into the SQS Queue")
 	if err := providers.provisionMessages(ctx, messages...); err != nil {
 		b.Fatalf("provisioning messages, %v", err)
 	}
-	logging.FromContext(ctx).Infof("completed provisioning messages into the SQS Queue")
+	log.FromContext(ctx).Info("completed provisioning messages into the SQS Queue")
 
 	m, err := controllerruntime.NewManager(env.Config, controllerruntime.Options{
-		BaseContext: func() context.Context { return logging.WithLogger(ctx, zap.NewNop().Sugar()) },
+		BaseContext: func() context.Context { return log.IntoContext(ctx, zapr.NewLogger(zap.NewNop())) },
 	})
 	if err != nil {
 		b.Fatalf("creating manager, %v", err)
@@ -144,7 +147,7 @@ func benchmarkNotificationController(b *testing.B, messageCount int) {
 	start := time.Now()
 	managerErr := make(chan error)
 	go func() {
-		logging.FromContext(ctx).Infof("starting controller manager")
+		log.FromContext(ctx).Info("starting controller manager")
 		managerErr <- m.Start(ctx)
 	}()
 
@@ -174,31 +177,29 @@ func newProviders(ctx context.Context, kubeClient client.Client) providerSet {
 		),
 	))
 	sqsAPI := servicesqs.New(sess)
+	out := lo.Must(sqsAPI.GetQueueUrlWithContext(ctx, &servicesqs.GetQueueUrlInput{QueueName: lo.ToPtr(options.FromContext(ctx).InterruptionQueue)}))
 	return providerSet{
 		kubeClient:  kubeClient,
 		sqsAPI:      sqsAPI,
-		sqsProvider: sqs.NewProvider(ctx, sqsAPI, "test-cluster"),
+		sqsProvider: lo.Must(sqs.NewDefaultProvider(sqsAPI, lo.FromPtr(out.QueueUrl))),
 	}
 }
 
-func (p *providerSet) makeInfrastructure(ctx context.Context) error {
-	if _, err := p.sqsAPI.CreateQueueWithContext(ctx, &servicesqs.CreateQueueInput{
-		QueueName: lo.ToPtr(options.FromContext(ctx).InterruptionQueueName),
+func (p *providerSet) makeInfrastructure(ctx context.Context) (string, error) {
+	out, err := p.sqsAPI.CreateQueueWithContext(ctx, &servicesqs.CreateQueueInput{
+		QueueName: lo.ToPtr(options.FromContext(ctx).InterruptionQueue),
 		Attributes: map[string]*string{
 			servicesqs.QueueAttributeNameMessageRetentionPeriod: aws.String("1200"), // 20 minutes for this test
 		},
-	}); err != nil {
-		return fmt.Errorf("creating servicesqs queue, %w", err)
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating servicesqs queue, %w", err)
 	}
-	return nil
+	return lo.FromPtr(out.QueueUrl), nil
 }
 
-func (p *providerSet) cleanupInfrastructure(ctx context.Context) error {
-	queueURL, err := p.sqsProvider.DiscoverQueueURL(ctx)
-	if err != nil {
-		return fmt.Errorf("discovering queue url for deletion, %w", err)
-	}
-	if _, err = p.sqsAPI.DeleteQueueWithContext(ctx, &servicesqs.DeleteQueueInput{
+func (p *providerSet) cleanupInfrastructure(queueURL string) error {
+	if _, err := p.sqsAPI.DeleteQueueWithContext(ctx, &servicesqs.DeleteQueueInput{
 		QueueUrl: lo.ToPtr(queueURL),
 	}); err != nil {
 		return fmt.Errorf("deleting servicesqs queue, %w", err)
@@ -220,12 +221,12 @@ func (p *providerSet) monitorMessagesProcessed(ctx context.Context, eventRecorde
 	totalProcessed := 0
 	go func() {
 		for totalProcessed < expectedProcessed {
-			totalProcessed = eventRecorder.Calls(events.InstanceStopping(coretest.Node()).Reason) +
-				eventRecorder.Calls(events.InstanceTerminating(coretest.Node()).Reason) +
-				eventRecorder.Calls(events.InstanceUnhealthy(coretest.Node()).Reason) +
-				eventRecorder.Calls(events.InstanceRebalanceRecommendation(coretest.Node()).Reason) +
-				eventRecorder.Calls(events.InstanceSpotInterrupted(coretest.Node()).Reason)
-			logging.FromContext(ctx).With("processed-message-count", totalProcessed).Infof("processed messages from the queue")
+			totalProcessed = eventRecorder.Calls(events.Stopping(coretest.Node(), coretest.NodeClaim())[0].Reason) +
+				eventRecorder.Calls(events.Stopping(coretest.Node(), coretest.NodeClaim())[0].Reason) +
+				eventRecorder.Calls(events.Unhealthy(coretest.Node(), coretest.NodeClaim())[0].Reason) +
+				eventRecorder.Calls(events.RebalanceRecommendation(coretest.Node(), coretest.NodeClaim())[0].Reason) +
+				eventRecorder.Calls(events.SpotInterrupted(coretest.Node(), coretest.NodeClaim())[0].Reason)
+			log.FromContext(ctx).WithValues("processed-message-count", totalProcessed).Info("processed messages from the queue")
 			time.Sleep(time.Second)
 		}
 		close(done)

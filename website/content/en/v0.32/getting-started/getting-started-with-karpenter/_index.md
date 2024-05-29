@@ -45,7 +45,7 @@ After setting up the tools, set the Karpenter and Kubernetes version:
 
 ```bash
 export KARPENTER_NAMESPACE=karpenter
-export KARPENTER_VERSION=v0.32.9
+export KARPENTER_VERSION=v0.32.10
 export K8S_VERSION=1.28
 ```
 
@@ -80,6 +80,16 @@ The following cluster configuration will:
 {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step02-create-cluster.sh" language="bash"%}}
 
 {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step06-add-spot-role.sh" language="bash"%}}
+
+{{% alert title="EKSCTL Breaking Change" color="warning" %}}
+Starting with `eksctl` v1.77.0, a service account is created for each podIdentityAssociation.
+This default service account is incompatible with the Karpenter Helm chart, and it will need to be removed to proceed with installation.
+If you're on an affected version of `eksctl` and you created a cluster with a `podIdentityAssociation`, run the following command before proceeding with the rest of the installation.
+This has been identified as a breaking change in `eksctl` which will be addressed in a future release ([GitHub Issue](https://github.com/eksctl-io/eksctl/issues/7775)).
+```bash
+kubectl delete sa -n ${KARPENTER_NAMESPACE} karpenter
+```
+{{% /alert %}}
 
 {{% alert title="Windows Support Notice" color="warning" %}}
 In order to run Windows workloads, Windows support should be enabled in your EKS Cluster.
@@ -192,6 +202,19 @@ aws ec2 create-vpc-endpoint --vpc-id ${VPC_ID} --service-name ${SERVICE_NAME} --
 {{% alert title="Note" color="primary" %}}
 
 Karpenter (controller and webhook deployment) container images must be in or copied to Amazon ECR private or to a another private registry accessible from inside the VPC. If these are not available from within the VPC, or from networks peered with the VPC, you will get Image pull errors when Kubernetes tries to pull these images from ECR public.
+
+{{% /alert %}}
+
+{{% alert title="Note" color="primary" %}}
+
+There is currently no VPC private endpoint for the [IAM API](https://docs.aws.amazon.com/IAM/latest/APIReference/welcome.html). As a result, you cannot use the default `spec.role` field in your `EC2NodeClass`. Instead, you need to provision and manage an instance profile manually and then specify Karpenter to use this instance profile through the `spec.instanceProfile` field.
+
+You can provision an instance profile manually and assign a Node role to it by calling the following command
+
+```bash
+aws iam create-instance-profile --instance-profile-name "KarpenterNodeInstanceProfile-${CLUSTER_NAME}"
+aws iam add-role-to-instance-profile --instance-profile-name "KarpenterNodeInstanceProfile-${CLUSTER_NAME}" --role-name "KarpenterNodeRole-${CLUSTER_NAME}"
+```
 
 {{% /alert %}}
 
