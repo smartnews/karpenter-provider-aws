@@ -621,6 +621,13 @@ spec:
                         memory leak protection, and disruption testing.
                       pattern: ^(([0-9]+(s|m|h))+)|(Never)$
                       type: string
+                    utilizationThreshold:
+                      description: |-
+                        UtilizationThreshold is defined as sum of requested resources divided by capacity
+                        below which a node can be considered for disruption.
+                      maximum: 100
+                      minimum: 1
+                      type: integer
                   type: object
                   x-kubernetes-validations:
                     - message: consolidateAfter cannot be combined with consolidationPolicy=WhenUnderutilized
