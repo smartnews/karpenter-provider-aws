@@ -26,6 +26,10 @@ const (
 	messageTypeLabel       = "message_type"
 	actionTypeLabel        = "action_type"
 	terminationReasonLabel = "interruption"
+	instanceTypeLabel      = "instance_type"
+	zoneLabel              = "zone"
+	hostLabel              = "node_name"
+	poolLabel              = "node_pool"
 )
 
 var (
@@ -67,8 +71,17 @@ var (
 			metrics.NodePoolLabel,
 		},
 	)
+	spotTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: interruptionSubsystem,
+			Name:      "spot_total",
+			Help:      "Number of the spot interruption. Labeled by AZ, instance type",
+		},
+		[]string{instanceTypeLabel, zoneLabel, hostLabel, poolLabel},
+	)
 )
 
 func init() {
-	crmetrics.Registry.MustRegister(receivedMessages, deletedMessages, messageLatency, actionsPerformed)
+	crmetrics.Registry.MustRegister(receivedMessages, deletedMessages, messageLatency, actionsPerformed, spotTotal)
 }
