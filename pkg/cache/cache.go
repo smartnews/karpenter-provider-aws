@@ -23,7 +23,7 @@ const (
 	// resources. Cache hits enable faster provisioning and reduced API load on
 	// AWS APIs, which can have a serious impact on performance and scalability.
 	// DO NOT CHANGE THIS VALUE WITHOUT DUE CONSIDERATION
-	DefaultTTL = time.Minute
+	DefaultTTL = 5 * time.Minute
 	// UnavailableOfferingsTTL is the time before offerings that were marked as unavailable
 	// are removed from the cache and are available for launch again
 	UnavailableOfferingsTTL = 3 * time.Minute
