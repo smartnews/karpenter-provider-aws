@@ -26,6 +26,7 @@ import (
 	"github.com/awslabs/operatorpkg/singleton"
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
@@ -198,11 +199,34 @@ func (c *Controller) handleNodeClaim(ctx context.Context, msg messages.Message, 
 		if zone != "" && instanceType != "" {
 			c.unavailableOfferingsCache.MarkUnavailable(ctx, string(msg.Kind()), instanceType, zone, karpv1.CapacityTypeSpot)
 		}
+		spotIntTotal.WithLabelValues(instanceType, zone, nodeClaim.Status.NodeName, nodeClaim.Labels["karpenter.sh/nodepool"]).Inc()
+		// try to create a new nodeclaim immediately but ignore error if it fails
+		if err := c.createNodeClaim(ctx, nodeClaim); err != nil {
+			log.FromContext(ctx).Error(err, "[interruption handling]failed to create a new nodeclaim")
+		} else {
+			log.FromContext(ctx).Info("Created new nodeclaim due to spot interruption")
+			// wait for the node provisioning before draining
+			time.Sleep(60 * time.Second)
+		}
 	}
 	if action != NoAction {
 		return c.deleteNodeClaim(ctx, msg, nodeClaim, node)
 	}
 	return nil
+}
+
+// createNodeClaim creates a new NodeClaim with the same spec of the interrupted one
+func (c *Controller) createNodeClaim(ctx context.Context, oldNodeClaim *karpv1.NodeClaim) error {
+	newNodeClaim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName:    oldNodeClaim.ObjectMeta.GenerateName,
+			Annotations:     oldNodeClaim.ObjectMeta.Annotations,
+			Labels:          oldNodeClaim.ObjectMeta.Labels,
+			OwnerReferences: oldNodeClaim.ObjectMeta.OwnerReferences,
+		},
+		Spec: oldNodeClaim.Spec,
+	}
+	return c.kubeClient.Create(ctx, newNodeClaim)
 }
 
 // deleteNodeClaim removes the NodeClaim from the api-server
