@@ -26,7 +26,7 @@ const (
 	DefaultTTL = 5 * time.Minute
 	// UnavailableOfferingsTTL is the time before offerings that were marked as unavailable
 	// are removed from the cache and are available for launch again
-	UnavailableOfferingsTTL = 30 * time.Minute
+	UnavailableOfferingsTTL = 10 * time.Minute
 	// InstanceTypesAndZonesTTL is the time before we refresh instance types and zones at EC2
 	InstanceTypesAndZonesTTL = 5 * time.Minute
 	// InstanceProfileTTL is the time before we refresh checking instance profile existence at IAM
